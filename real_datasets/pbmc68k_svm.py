@@ -2,6 +2,7 @@ import argparse
 import json
 from itertools import combinations
 
+import bucket_utils
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
@@ -41,6 +42,8 @@ plt.rcParams.update(
 
 # min_samples sweep - similar to min_df
 min_samples_list = pbmc68k_utils.get_min_samples_sweep()
+bucket_n_features = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+n_bucket_seeds = 5
 num_markers = 40
 
 colors = {
@@ -90,6 +93,7 @@ def get_ridge_results_full():
         "space_quantum": [],
         "accuracies_mean": [],
         "accuracies_std": [],
+        "accuracy_scores_by_pair": [],
         "pairs": [(label_names[c1], label_names[c2]) for c1, c2 in pairs],
     }
 
@@ -107,6 +111,7 @@ def get_ridge_results_full():
 
         # Collect results across all pairs
         pair_accuracies = []
+        pair_accuracy_scores = []
         pair_space_streaming = []
         pair_space_sparse = []
         pair_space_quantum = []
@@ -145,6 +150,7 @@ def get_ridge_results_full():
             scores = cross_val_score(clf, X_pair, y_pair, cv=5)
 
             pair_accuracies.append(scores.mean())
+            pair_accuracy_scores.append([float(s) for s in scores])
             pair_space_streaming.append(space_stream)
             pair_space_sparse.append(space_sparse)
             pair_space_quantum.append(space_quantum)
@@ -165,6 +171,102 @@ def get_ridge_results_full():
         results["space_quantum"].append(space_quantum_mean)
         results["accuracies_mean"].append(acc_mean)
         results["accuracies_std"].append(acc_sem)
+        results["accuracy_scores_by_pair"].append(pair_accuracy_scores)
+
+    return results
+
+
+def get_ridge_results_bucket(bucket_seeds):
+    tqdm.write("Loading PBMC68k dataset (all classes)...")
+    X_full, y_full, label_names = pbmc68k_utils.load_pbmc68k_data(
+        min_samples=1, normalize=True, binary=False
+    )
+    tqdm.write(f"Dataset shape: {X_full.shape}, Classes: {label_names}")
+
+    rng = np.random.default_rng(42)
+    n_classes = len(label_names)
+    pairs = get_random_pairs(n_classes, N_PAIRS, rng)
+
+    full_dim = X_full.shape[1]
+    n_features_list = [k for k in bucket_n_features if k < full_dim] + [full_dim]
+
+    results = {
+        "n_features": [],
+        "space_streaming": [],
+        "space_sparse": [],
+        "space_quantum": [],
+        "space_streaming_by_seed_pair": [],
+        "space_sparse_by_seed_pair": [],
+        "space_quantum_by_seed_pair": [],
+        "accuracies_mean": [],
+        "accuracies_std": [],
+        "accuracy_scores_by_seed_pair": [],
+        "pairs": [(label_names[c1], label_names[c2]) for c1, c2 in pairs],
+    }
+
+    tqdm.write("Sweeping bucket dimension for PBMC68k...")
+
+    for n_features in tqdm(n_features_list, desc="bucket Sweep"):
+        seed_pair_accuracy_scores = []
+        seed_pair_space_streaming = []
+        seed_pair_space_sparse = []
+        seed_pair_space_quantum = []
+
+        for seed in bucket_seeds:
+            X_bucket_full, _ = bucket_utils.bucket_features(
+                X_full, n_features, seed=seed
+            )
+
+            this_seed_scores = []
+            this_seed_space_streaming = []
+            this_seed_space_sparse = []
+            this_seed_space_quantum = []
+
+            for c1, c2 in pairs:
+                mask = (y_full == c1) | (y_full == c2)
+                X_pair = X_bucket_full[mask]
+                y_pair = (y_full[mask] == c2).astype(int)
+
+                feature_dim = X_pair.shape[1]
+                num_samples = X_pair.shape[0]
+                sparsity = bucket_utils.max_sparsity(X_pair)
+
+                # Same machine-size formulas as the rare-feature path; bucket only changes X.
+                space_stream = feature_dim
+                space_sparse = X_pair.getnnz()
+                space_quantum = (
+                    2 * np.ceil(np.log2(num_samples + 2 * feature_dim))
+                    + np.ceil(np.log2(sparsity + 1))
+                    + 4
+                )
+
+                clf = RidgeClassifier(
+                    random_state=42, alpha=200.0, solver="auto", class_weight="balanced"
+                )
+                scores = cross_val_score(clf, X_pair, y_pair, cv=5)
+
+                this_seed_scores.append([float(s) for s in scores])
+                this_seed_space_streaming.append(space_stream)
+                this_seed_space_sparse.append(space_sparse)
+                this_seed_space_quantum.append(space_quantum)
+
+            seed_pair_accuracy_scores.append(this_seed_scores)
+            seed_pair_space_streaming.append(this_seed_space_streaming)
+            seed_pair_space_sparse.append(this_seed_space_sparse)
+            seed_pair_space_quantum.append(this_seed_space_quantum)
+
+        acc_mean, acc_sem = bucket_utils.mean_and_sem(seed_pair_accuracy_scores)
+
+        results["n_features"].append(n_features)
+        results["space_streaming"].append(np.mean(seed_pair_space_streaming))
+        results["space_sparse"].append(np.mean(seed_pair_space_sparse))
+        results["space_quantum"].append(np.mean(seed_pair_space_quantum))
+        results["space_streaming_by_seed_pair"].append(seed_pair_space_streaming)
+        results["space_sparse_by_seed_pair"].append(seed_pair_space_sparse)
+        results["space_quantum_by_seed_pair"].append(seed_pair_space_quantum)
+        results["accuracies_mean"].append(acc_mean)
+        results["accuracies_std"].append(acc_sem)
+        results["accuracy_scores_by_seed_pair"].append(seed_pair_accuracy_scores)
 
     return results
 
@@ -218,61 +320,117 @@ def get_sorted_arrays(x_mean, x_std, y_mean):
     )
 
 
-def run_analysis(load_file=None):
+def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
+    if mode not in ("rare", "bucket"):
+        raise ValueError("mode must be 'rare' or 'bucket'")
+
     keys = ["streaming", "sparse", "quantum"]
 
     if load_file is not None:
         print(f"Loading analysis from {load_file}...")
         with open(load_file, "r") as f:
             data = json.load(f)
-        raw_data = data["raw_data_by_min_samples"]
-        min_samps = sorted([int(k) for k in raw_data.keys()])
+        raw_key = (
+            "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_samples"
+        )
+        raw_data = data[raw_key]
+        params = sorted([int(k) for k in raw_data.keys()])
 
         final_stats = {
             k: {"mean_space": [], "mean_acc": [], "sem_acc": []} for k in keys
         }
-        for ms in min_samps:
+        for param in params:
             for k in keys:
-                final_stats[k]["mean_space"].append(raw_data[str(ms)][k]["space"])
-                final_stats[k]["mean_acc"].append(raw_data[str(ms)][k]["accuracy_mean"])
-                final_stats[k]["sem_acc"].append(raw_data[str(ms)][k]["accuracy_sem"])
+                entry = raw_data[str(param)][k]
+                final_stats[k]["mean_space"].append(entry["space"])
+                if "accuracy_scores_by_seed_pair" in entry:
+                    acc_mean, acc_sem = bucket_utils.mean_and_sem(
+                        entry["accuracy_scores_by_seed_pair"]
+                    )
+                elif "accuracy_scores_by_pair" in entry:
+                    acc_mean, acc_sem = bucket_utils.mean_and_sem(
+                        entry["accuracy_scores_by_pair"]
+                    )
+                else:
+                    acc_mean = entry["accuracy_mean"]
+                    acc_sem = entry["accuracy_sem"]
+                final_stats[k]["mean_acc"].append(acc_mean)
+                final_stats[k]["sem_acc"].append(acc_sem)
 
     else:
-        print("Running Ridge Analysis on PBMC68k Dataset (Binary Classification)...")
-        results = get_ridge_results_full()
+        if mode == "bucket":
+            print("Running Ridge Analysis on bucketed PBMC68k Dataset...")
+            bucket_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
+            print(f"Averaging over bucket seeds: {bucket_seeds}")
+            results = get_ridge_results_bucket(bucket_seeds=bucket_seeds)
+            param_name = "n_features"
+            raw_key = "raw_data_by_n_features"
+            output_json = "pbmc68k_bucket_size_vs_accuracy.json"
+            dataset_name = "PBMC68k (bucket, averaged over random pairs)"
+        else:
+            print(
+                "Running Ridge Analysis on PBMC68k Dataset (Binary Classification)..."
+            )
+            results = get_ridge_results_full()
+            param_name = "min_samples"
+            raw_key = "raw_data_by_min_samples"
+            output_json = "pbmc68k_size_vs_accuracy.json"
+            dataset_name = "PBMC68k (Binary, averaged over random pairs)"
 
         final_stats = {
             k: {"mean_space": [], "mean_acc": [], "sem_acc": []} for k in keys
         }
 
         data_to_save = {
-            "dataset": "PBMC68k (Binary, averaged over random pairs)",
+            "dataset": dataset_name,
             "pairs": results.get("pairs", []),
             "n_pairs": len(results.get("pairs", [])),
-            "raw_data_by_min_samples": {},
+            raw_key: {},
         }
+        if mode == "bucket":
+            data_to_save["bucket_seeds"] = bucket_seeds
+            data_to_save["bucket_n_features"] = bucket_n_features
+            data_to_save["bucket_seed_sample_seed"] = (
+                bucket_utils.DEFAULT_BUCKET_SEED_SAMPLE_SEED
+            )
 
-        for i, ms in enumerate(results["min_samples"]):
-            ms_str = str(ms)
-            data_to_save["raw_data_by_min_samples"][ms_str] = {}
+        for i, param in enumerate(results[param_name]):
+            param_str = str(param)
+            data_to_save[raw_key][param_str] = {}
             for k in keys:
                 space = results[f"space_{k}"][i]
-                acc_mean = results["accuracies_mean"][i]
-                acc_sem = results["accuracies_std"][i]
+                if mode == "bucket":
+                    acc_mean = results["accuracies_mean"][i]
+                    acc_sem = results["accuracies_std"][i]
+                else:
+                    acc_mean, acc_sem = bucket_utils.mean_and_sem(
+                        results["accuracy_scores_by_pair"][i]
+                    )
 
                 final_stats[k]["mean_space"].append(space)
                 final_stats[k]["mean_acc"].append(acc_mean)
                 final_stats[k]["sem_acc"].append(acc_sem)
 
-                data_to_save["raw_data_by_min_samples"][ms_str][k] = {
+                data_to_save[raw_key][param_str][k] = {
                     "space": space,
                     "accuracy_mean": acc_mean,
                     "accuracy_sem": acc_sem,
                 }
+                if mode == "bucket":
+                    data_to_save[raw_key][param_str][k]["space_by_seed_pair"] = results[
+                        f"space_{k}_by_seed_pair"
+                    ][i]
+                    data_to_save[raw_key][param_str][k][
+                        "accuracy_scores_by_seed_pair"
+                    ] = results["accuracy_scores_by_seed_pair"][i]
+                else:
+                    data_to_save[raw_key][param_str][k]["accuracy_scores_by_pair"] = (
+                        results["accuracy_scores_by_pair"][i]
+                    )
 
-        with open("pbmc68k_size_vs_accuracy.json", "w") as f:
+        with open(output_json, "w") as f:
             json.dump(data_to_save, f, indent=2)
-        print("Saved raw data to pbmc68k_size_vs_accuracy.json")
+        print(f"Saved raw data to {output_json}")
 
     # Plot
     plt.figure(figsize=figsize)
@@ -295,32 +453,63 @@ def run_analysis(load_file=None):
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
 
-    plt.text(
-        0.8,
-        1.8e6,
-        "Classical sparse / QRAM",
-        color=colors["sparse"],
-        fontsize=10,
-        path_effects=halo,
-    )
-    plt.text(
-        0.888,
-        1.2e4,
-        "Classical streaming",
-        color=colors["streaming"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
-    plt.text(
-        0.90,
-        1.5e1,
-        "Quantum oracle sketching",
-        color=colors["quantum"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
+    ax = plt.gca()
+    if mode == "bucket":
+        plt.text(
+            0.2,
+            0.9,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        plt.text(
+            0.9,
+            0.62,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+            ha="right",
+        )
+        plt.text(
+            0.15,
+            0.04,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+    else:
+        plt.text(
+            0.8,
+            1.8e6,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+        )
+        plt.text(
+            0.888,
+            1.2e4,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        plt.text(
+            0.90,
+            1.5e1,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
 
     plt.yscale("log")
     plt.xlabel("Accuracy")
@@ -329,7 +518,10 @@ def run_analysis(load_file=None):
         [0.80, 0.82, 0.84, 0.86, 0.88, 0.90],
         ["80%", "82%", "84%", "86%", "88%", "90%"],
     )
-    plt.xlim(0.795, 0.915)
+    if mode == "bucket":
+        plt.xlim(0.795, 0.91)
+    else:
+        plt.xlim(0.795, 0.915)
 
     plt.tick_params(direction="in", which="both", top=False, right=True)
     plt.ylabel("Machine size")
@@ -337,8 +529,13 @@ def run_analysis(load_file=None):
     plt.grid(True, which="major", ls="-", alpha=0.1)
     plt.title("Binary classification")
     plt.tight_layout()
-    plt.savefig("pbmc68k_size_vs_accuracy.pdf")
-    print("Saved pbmc68k_size_vs_accuracy.pdf")
+    output_pdf = (
+        "pbmc68k_bucket_size_vs_accuracy.pdf"
+        if mode == "bucket"
+        else "pbmc68k_size_vs_accuracy.pdf"
+    )
+    plt.savefig(output_pdf)
+    print(f"Saved {output_pdf}")
 
 
 if __name__ == "__main__":
@@ -348,6 +545,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--load", type=str, default=None, help="Load analysis data from JSON file"
     )
+    parser.add_argument(
+        "--mode",
+        choices=["rare", "bucket"],
+        required=True,
+        help="rare: original rare-feature truncation; bucket: random feature buckets",
+    )
+    parser.add_argument("--n-bucket-seeds", type=int, default=n_bucket_seeds)
     args = parser.parse_args()
 
-    run_analysis(load_file=args.load)
+    run_analysis(
+        load_file=args.load, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+    )

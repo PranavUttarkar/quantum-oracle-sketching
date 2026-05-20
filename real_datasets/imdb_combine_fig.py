@@ -118,6 +118,7 @@ def plot_parametric_hybrid(
     linewidth,
     marker_size,
     accuracy_panel=True,
+    mode="rare",
 ):
     # Conditionally fill between if std is present/meaningful
     if x_std is not None and np.any(x_std > 0):
@@ -134,17 +135,20 @@ def plot_parametric_hybrid(
     ax.plot(x_mean, y_mean, linestyle="-", color=color, linewidth=1.5, alpha=0.9)
 
     # 2. Markers
-    x_min, x_max = np.min(x_mean), np.max(x_mean)
-    target_x = np.linspace(x_min, x_max, num=num_markers)
-    marker_indices = []
-    for tx in target_x:
-        idx = (np.abs(x_mean - tx)).argmin()
-        if idx not in marker_indices:
-            marker_indices.append(idx)
-    if accuracy_panel:
-        marker_indices += [-1, -3, -9, -13, -18, -21, -28]
+    if mode == "bucket":
+        marker_indices = list(range(len(x_mean)))
     else:
-        marker_indices += [-2, -5, -10, -15, -19, -24]
+        x_min, x_max = np.min(x_mean), np.max(x_mean)
+        target_x = np.linspace(x_min, x_max, num=num_markers)
+        marker_indices = []
+        for tx in target_x:
+            idx = (np.abs(x_mean - tx)).argmin()
+            if idx not in marker_indices:
+                marker_indices.append(idx)
+        if accuracy_panel:
+            marker_indices += [-1, -3, -9, -13, -18, -21, -28]
+        else:
+            marker_indices += [-2, -5, -10, -15, -19, -24]
 
     ax.scatter(
         x_mean[marker_indices],
@@ -168,6 +172,11 @@ def get_sorted_arrays(x_mean, x_std, y_mean, y_std):
     )
 
 
+def mean_and_sem(values):
+    vals = np.array(values, dtype=float).reshape(-1)
+    return float(np.mean(vals)), float(np.std(vals) / np.sqrt(vals.size))
+
+
 def compute_stats_from_json(data, metric_type):
     keys = ["streaming", "sparse", "quantum"]
     final_stats = {
@@ -180,7 +189,10 @@ def compute_stats_from_json(data, metric_type):
         for k in keys
     }
 
-    raw_data = data["raw_data_by_min_df"]
+    if "raw_data_by_n_features" in data:
+        raw_data = data["raw_data_by_n_features"]
+    else:
+        raw_data = data["raw_data_by_min_df"]
 
     # Need to sort keys
     mdfs = sorted([int(k) for k in raw_data.keys()])
@@ -189,21 +201,33 @@ def compute_stats_from_json(data, metric_type):
         for k in keys:
             entry = raw_data[str(mdf)][k]
 
-            # Space is single value
-            space = float(entry["space"])
+            if "space_by_seed" in entry:
+                space, space_sem = mean_and_sem(entry["space_by_seed"])
+            else:
+                space = float(entry["space"])
+                space_sem = 0.0
             final_stats[k]["mean_space"].append(space)
-            final_stats[k]["std_space"].append(0.0)  # Single run
+            final_stats[k]["std_space"].append(space_sem)
 
             if metric_type == "accuracy":
-                acc_mean = float(entry["accuracy_mean"])
-                acc_sem = float(entry["accuracy_sem"])
+                if "accuracy_scores_by_seed" in entry:
+                    acc_mean, acc_sem = mean_and_sem(entry["accuracy_scores_by_seed"])
+                elif "accuracy_scores" in entry:
+                    acc_mean, acc_sem = mean_and_sem(entry["accuracy_scores"])
+                else:
+                    acc_mean = float(entry["accuracy_mean"])
+                    acc_sem = float(entry["accuracy_sem"])
                 final_stats[k]["mean_x"].append(acc_mean)
                 final_stats[k]["std_x"].append(acc_sem)
 
             elif metric_type == "variance":
-                var_rec = float(entry["variance_recovery"])
+                if "variance_recovery_by_seed" in entry:
+                    var_rec, var_sem = mean_and_sem(entry["variance_recovery_by_seed"])
+                else:
+                    var_rec = float(entry["variance_recovery"])
+                    var_sem = float(entry.get("variance_recovery_sem", 0.0))
                 final_stats[k]["mean_x"].append(var_rec)
-                final_stats[k]["std_x"].append(0.0)  # Single run
+                final_stats[k]["std_x"].append(var_sem)
 
     # Convert lists to numpy arrays
     for k in keys:
@@ -213,7 +237,7 @@ def compute_stats_from_json(data, metric_type):
     return final_stats
 
 
-def plot_accuracy_panel(ax, stats):
+def plot_accuracy_panel(ax, stats, mode="rare"):
     keys = ["streaming", "sparse", "quantum"]
     for k in keys:
         xm, xs, ym, ys = get_sorted_arrays(
@@ -233,49 +257,83 @@ def plot_accuracy_panel(ax, stats):
             labels[k],
             linewidth_marker[k],
             markersize[k],
+            mode=mode,
         )
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
-    ax.text(
-        0.70,
-        4e6,
-        "Classical sparse / QRAM",
-        color=colors["sparse"],
-        fontsize=10,
-        path_effects=halo,
-    )
-    ax.text(
-        0.88,
-        9e4,
-        "Classical streaming",
-        color=colors["streaming"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
-    ax.text(
-        0.90,
-        1.9e1,
-        "Quantum oracle sketching",
-        color=colors["quantum"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
+    if mode == "bucket":
+        ax.text(
+            0.2,
+            0.85,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.9,
+            0.7,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+            ha="right",
+        )
+        ax.text(
+            0.15,
+            0.04,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        ax.set_xticks([0.60, 0.70, 0.80, 0.90])
+        ax.set_xticklabels(["60%", "70%", "80%", "90%"])
+        ax.set_xlim(0.57, 0.92)
+    else:
+        ax.text(
+            0.70,
+            4e6,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+        )
+        ax.text(
+            0.88,
+            9e4,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        ax.text(
+            0.90,
+            1.9e1,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        ax.set_xticks([0.70, 0.75, 0.80, 0.85, 0.90])
+        ax.set_xticklabels(["70%", "75%", "80%", "85%", "90%"])
+        ax.set_xlim(0.69, 0.91)
 
     ax.set_yscale("log")
     ax.set_ylim(1e1, 1e7)
     ax.set_xlabel("Accuracy")
-    ax.set_xticks([0.70, 0.75, 0.80, 0.85, 0.90])
-    ax.set_xticklabels(["70%", "75%", "80%", "85%", "90%"])
-    ax.set_xlim(0.69, 0.91)
     ax.set_ylabel("Machine size")
     ax.tick_params(direction="in", which="both", top=False, right=True)
     ax.grid(True, which="major", ls="-", alpha=0.1)
     ax.set_title("Binary classification")
 
 
-def plot_variance_panel(ax, stats):
+def plot_variance_panel(ax, stats, mode="rare"):
     keys = ["streaming", "sparse", "quantum"]
     for k in keys:
         xm, xs, ym, ys = get_sorted_arrays(
@@ -296,42 +354,76 @@ def plot_variance_panel(ax, stats):
             linewidth_marker[k],
             markersize[k],
             accuracy_panel=False,
+            mode=mode,
         )
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
-    ax.text(
-        0.75,
-        4e6,
-        "Classical sparse / QRAM",
-        color=colors["sparse"],
-        fontsize=10,
-        path_effects=halo,
-    )
-    ax.text(
-        0.99,
-        9e4,
-        "Classical streaming",
-        color=colors["streaming"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
-    ax.text(
-        1,
-        1.9e1,
-        "Quantum oracle sketching",
-        color=colors["quantum"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
+    if mode == "bucket":
+        ax.text(
+            0.2,
+            0.85,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.9,
+            0.70,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+            ha="right",
+        )
+        ax.text(
+            0.15,
+            0.04,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_xticklabels(["0%", "25%", "50%", "75%", "100%"])
+        ax.set_xlim(-0.1, 1.1)
+    else:
+        ax.text(
+            0.75,
+            4e6,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+        )
+        ax.text(
+            0.99,
+            9e4,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        ax.text(
+            1,
+            1.9e1,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        ax.set_xticks([0.75, 0.8, 0.85, 0.9, 0.95, 1.0])
+        ax.set_xticklabels(["75%", "80%", "85%", "90%", "95%", "100%"])
+        ax.set_xlim(0.73, 1.03)
 
     ax.set_yscale("log")
     ax.set_ylim(1e1, 1e7)
     ax.set_xlabel("Relative explained variance")
-    ax.set_xticks([0.75, 0.8, 0.85, 0.9, 0.95, 1.0])
-    ax.set_xticklabels(["75%", "80%", "85%", "90%", "95%", "100%"])
-    ax.set_xlim(0.73, 1.03)
     ax.tick_params(direction="in", which="both", top=False, right=True)
     ax.grid(True, which="major", ls="-", alpha=0.1)
     ax.set_title("Dimension reduction")
@@ -344,34 +436,59 @@ def main():
     parser.add_argument(
         "--accuracy-json",
         type=str,
-        default="imdb_size_vs_accuracy.json",
+        default=None,
         help="Path to accuracy JSON file.",
     )
     parser.add_argument(
         "--variance-json",
         type=str,
-        default="imdb_size_vs_variance.json",
+        default=None,
         help="Path to variance JSON file.",
     )
     parser.add_argument(
         "--out",
         type=str,
-        default="imdb_combine.pdf",
+        default=None,
         help="Output figure path.",
     )
+    parser.add_argument("--mode", choices=["rare", "bucket"], required=True)
     args = parser.parse_args()
+
+    if args.mode == "bucket":
+        if args.accuracy_json is None:
+            args.accuracy_json = "imdb_bucket_size_vs_accuracy.json"
+        if args.variance_json is None:
+            args.variance_json = "imdb_bucket_size_vs_variance.json"
+    else:
+        if args.accuracy_json is None:
+            args.accuracy_json = "imdb_size_vs_accuracy.json"
+        if args.variance_json is None:
+            args.variance_json = "imdb_size_vs_variance.json"
 
     with open(args.accuracy_json, "r") as f:
         accuracy_data = json.load(f)
     with open(args.variance_json, "r") as f:
         variance_data = json.load(f)
 
+    for path, data in [
+        (args.accuracy_json, accuracy_data),
+        (args.variance_json, variance_data),
+    ]:
+        is_bucket = "raw_data_by_n_features" in data
+        if is_bucket != (args.mode == "bucket"):
+            raise ValueError(f"{path} does not match --mode {args.mode}")
+
+    if args.out is None:
+        args.out = (
+            "imdb_bucket_combine.pdf" if args.mode == "bucket" else "imdb_combine.pdf"
+        )
+
     accuracy_stats = compute_stats_from_json(accuracy_data, "accuracy")
     variance_stats = compute_stats_from_json(variance_data, "variance")
 
     fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(6, 3.5), sharey=True)
-    plot_accuracy_panel(ax_left, accuracy_stats)
-    plot_variance_panel(ax_right, variance_stats)
+    plot_accuracy_panel(ax_left, accuracy_stats, mode=args.mode)
+    plot_variance_panel(ax_right, variance_stats, mode=args.mode)
 
     ax_right.tick_params(axis="y", labelleft=False)
     fig.tight_layout()

@@ -275,25 +275,40 @@ def plot_benchmark_results(
             num_samples_list.append(res["num_samples"])
             error_mean_list.append(res["error_mean"])
             error_std_list.append(res["error_std"])
-        plt.errorbar(
-            num_samples_list,
-            error_mean_list,
-            yerr=error_std_list,
-            fmt="o",
+
+        color = colors[color_counter]
+        num_samples_arr = jnp.array(num_samples_list)
+        error_mean_arr = jnp.array(error_mean_list)
+        error_std_arr = jnp.array(error_std_list)
+        order = jnp.argsort(num_samples_arr)
+        num_samples_arr = num_samples_arr[order]
+        error_mean_arr = error_mean_arr[order]
+        error_std_arr = error_std_arr[order]
+
+        lower = jnp.maximum(
+            error_mean_arr - error_std_arr, jnp.finfo(error_mean_arr.dtype).tiny
+        )
+        upper = error_mean_arr + error_std_arr
+        plt.fill_between(
+            num_samples_arr, lower, upper, color=color, alpha=0.2, edgecolor="none"
+        )
+        plt.plot(
+            num_samples_arr,
+            error_mean_arr,
+            "o",
             label=rf"${dim_label} = {dim}$",
-            color=colors[color_counter],
-            capsize=5,
+            color=color,
         )
         if fit is not None:
             # Plot fitted curve for this dimension
-            num_samples_fit = jnp.array(num_samples_list)
+            num_samples_fit = num_samples_arr
             error_fit = (
                 fit["C"]
                 * (dim_transform(dim) ** fit["alpha"])
                 / (num_samples_fit ** fit["beta"])
             )
-            plt.plot(num_samples_fit, error_fit, "-", color=colors[color_counter])
-            color_counter += 1
+            plt.plot(num_samples_fit, error_fit, "-", color=color)
+        color_counter += 1
 
     fit_handles = None
     if fit is not None:

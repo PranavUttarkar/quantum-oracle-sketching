@@ -1,6 +1,7 @@
 import argparse
 import json
 
+import bucket_utils
 import imdb_utils
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
@@ -95,6 +96,8 @@ min_dfs = [
     4379,
     5000,
 ]
+bucket_n_features = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+n_bucket_seeds = 5
 num_markers = 40
 
 colors = {
@@ -125,6 +128,7 @@ def get_ridge_results_full():
         "space_quantum": [],
         "accuracies_mean": [],
         "accuracies_std": [],  # For error bars (SEM)
+        "accuracy_scores": [],
     }
 
     tqdm.write("Sweeping min_df for Full IMDB...")
@@ -168,12 +172,89 @@ def get_ridge_results_full():
         results["space_quantum"].append(space_quantum)
         results["accuracies_mean"].append(acc_mean)
         results["accuracies_std"].append(acc_sem)
+        results["accuracy_scores"].append([float(s) for s in scores])
+
+    return results
+
+
+def get_ridge_results_bucket(bucket_seeds):
+    # 1. Load and vectorize the full min_df=1 data once.
+    X_all_raw, y_all = imdb_utils.load_imdb_data()
+
+    vectorizer = TfidfVectorizer(min_df=1, stop_words="english")
+    X_full = vectorizer.fit_transform(X_all_raw)
+    X_full.eliminate_zeros()
+
+    full_dim = X_full.shape[1]
+    n_features_list = [k for k in bucket_n_features if k < full_dim] + [full_dim]
+
+    results = {
+        "n_features": [],
+        "space_streaming": [],
+        "space_sparse": [],
+        "space_quantum": [],
+        "space_streaming_by_seed": [],
+        "space_sparse_by_seed": [],
+        "space_quantum_by_seed": [],
+        "accuracies_mean": [],
+        "accuracies_std": [],
+        "accuracy_scores_by_seed": [],
+    }
+
+    tqdm.write("Sweeping bucket dimension for Full IMDB...")
+
+    for n_features in tqdm(n_features_list, desc="bucket Sweep"):
+        seed_space_streaming = []
+        seed_space_sparse = []
+        seed_space_quantum = []
+        seed_accuracy_scores = []
+
+        for seed in bucket_seeds:
+            X_bucket, _ = bucket_utils.bucket_features(X_full, n_features, seed=seed)
+
+            feature_dim = X_bucket.shape[1]
+            num_samples = X_bucket.shape[0]
+            sparsity = bucket_utils.max_sparsity(X_bucket)
+
+            # Same machine-size formulas as the rare-feature path; bucket only changes X.
+            seed_space_streaming.append(feature_dim)
+            seed_space_sparse.append(X_bucket.getnnz())
+            seed_space_quantum.append(
+                2 * np.ceil(np.log2(num_samples + 2 * feature_dim))
+                + np.ceil(np.log2(sparsity + 1))
+                + 4
+            )
+
+            clf = RidgeClassifier(random_state=42, alpha=10, solver="auto")
+            scores = cross_val_score(clf, X_bucket, y_all, cv=5)
+            seed_accuracy_scores.append([float(s) for s in scores])
+
+        acc_mean, acc_sem = bucket_utils.mean_and_sem(seed_accuracy_scores)
+
+        results["n_features"].append(n_features)
+        results["space_streaming"].append(np.mean(seed_space_streaming))
+        results["space_sparse"].append(np.mean(seed_space_sparse))
+        results["space_quantum"].append(np.mean(seed_space_quantum))
+        results["space_streaming_by_seed"].append(seed_space_streaming)
+        results["space_sparse_by_seed"].append(seed_space_sparse)
+        results["space_quantum_by_seed"].append(seed_space_quantum)
+        results["accuracies_mean"].append(acc_mean)
+        results["accuracies_std"].append(acc_sem)
+        results["accuracy_scores_by_seed"].append(seed_accuracy_scores)
 
     return results
 
 
 def plot_parametric_hybrid(
-    x_mean, x_std, y_mean, color, marker, label, linewidth, marker_size
+    x_mean,
+    x_std,
+    y_mean,
+    color,
+    marker,
+    label,
+    linewidth,
+    marker_size,
+    show_all_markers=False,
 ):
     # 1. Horizontal Tube (Accuracy SEM)
     # y_mean is Space (Log scale), which doesn't have variance here (single run)
@@ -197,14 +278,17 @@ def plot_parametric_hybrid(
     plt.plot(x_vals, y_vals, linestyle="-", color=color, linewidth=1.5, alpha=0.9)
 
     # 3. Markers
-    x_min, x_max = np.min(x_vals), np.max(x_vals)
-    target_x = np.linspace(x_min, x_max, num=num_markers)
-    marker_indices = []
-    for tx in target_x:
-        idx = (np.abs(x_vals - tx)).argmin()
-        if idx not in marker_indices:
-            marker_indices.append(idx)
-    marker_indices += [-1, -3, -9, -13, -18, -21, -28]
+    if show_all_markers:
+        marker_indices = np.arange(len(x_vals))
+    else:
+        x_min, x_max = np.min(x_vals), np.max(x_vals)
+        target_x = np.linspace(x_min, x_max, num=num_markers)
+        marker_indices = []
+        for tx in target_x:
+            idx = (np.abs(x_vals - tx)).argmin()
+            if idx not in marker_indices:
+                marker_indices.append(idx)
+        marker_indices += [-1, -3, -9, -13, -18, -21, -28]
 
     plt.scatter(
         x_vals[marker_indices],
@@ -228,40 +312,74 @@ def get_sorted_arrays(x_mean, x_std, y_mean):
     )
 
 
-def run_analysis(load_file=None):
+def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
+    if mode not in ("rare", "bucket"):
+        raise ValueError("mode must be 'rare' or 'bucket'")
+
     keys = ["streaming", "sparse", "quantum"]
 
     if load_file is not None:
         print(f"Loading analysis from {load_file}...")
         with open(load_file, "r") as f:
             data = json.load(f)
-        raw_data = data["raw_data_by_min_df"]
-        mdfs = sorted([int(k) for k in raw_data.keys()])
+        raw_key = "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_df"
+        raw_data = data[raw_key]
+        params = sorted([int(k) for k in raw_data.keys()])
 
         final_stats = {
             k: {"mean_space": [], "mean_acc": [], "sem_acc": []} for k in keys
         }
-        for mdf in mdfs:
+        for param in params:
             for k in keys:
-                final_stats[k]["mean_space"].append(raw_data[str(mdf)][k]["space"])
-                final_stats[k]["mean_acc"].append(
-                    raw_data[str(mdf)][k]["accuracy_mean"]
-                )
-                final_stats[k]["sem_acc"].append(raw_data[str(mdf)][k]["accuracy_sem"])
+                entry = raw_data[str(param)][k]
+                final_stats[k]["mean_space"].append(entry["space"])
+                if "accuracy_scores_by_seed" in entry:
+                    acc_mean, acc_sem = bucket_utils.mean_and_sem(
+                        entry["accuracy_scores_by_seed"]
+                    )
+                elif "accuracy_scores" in entry:
+                    acc_mean, acc_sem = bucket_utils.mean_and_sem(
+                        entry["accuracy_scores"]
+                    )
+                else:
+                    acc_mean = entry["accuracy_mean"]
+                    acc_sem = entry["accuracy_sem"]
+                final_stats[k]["mean_acc"].append(acc_mean)
+                final_stats[k]["sem_acc"].append(acc_sem)
 
     else:
-        print("Running Ridge Analysis on Full IMDB Dataset...")
-        results = get_ridge_results_full()
+        if mode == "bucket":
+            print("Running Ridge Analysis on bucketed IMDB Dataset...")
+            bucket_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
+            print(f"Averaging over bucket seeds: {bucket_seeds}")
+            results = get_ridge_results_bucket(bucket_seeds=bucket_seeds)
+            param_name = "n_features"
+            raw_key = "raw_data_by_n_features"
+            output_json = "imdb_bucket_size_vs_accuracy.json"
+            dataset_name = "IMDB Full (bucket)"
+        else:
+            print("Running Ridge Analysis on Full IMDB Dataset...")
+            results = get_ridge_results_full()
+            param_name = "min_dfs"
+            raw_key = "raw_data_by_min_df"
+            output_json = "imdb_size_vs_accuracy.json"
+            dataset_name = "IMDB Full"
 
         final_stats = {
             k: {"mean_space": [], "mean_acc": [], "sem_acc": []} for k in keys
         }
 
-        data_to_save = {"dataset": "IMDB Full", "raw_data_by_min_df": {}}
+        data_to_save = {"dataset": dataset_name, raw_key: {}}
+        if mode == "bucket":
+            data_to_save["bucket_seeds"] = bucket_seeds
+            data_to_save["bucket_n_features"] = bucket_n_features
+            data_to_save["bucket_seed_sample_seed"] = (
+                bucket_utils.DEFAULT_BUCKET_SEED_SAMPLE_SEED
+            )
 
-        for i, mdf in enumerate(results["min_dfs"]):
-            mdf_str = str(mdf)
-            data_to_save["raw_data_by_min_df"][mdf_str] = {}
+        for i, param in enumerate(results[param_name]):
+            param_str = str(param)
+            data_to_save[raw_key][param_str] = {}
             for k in keys:
                 space = results[f"space_{k}"][i]
                 acc_mean = results["accuracies_mean"][i]
@@ -271,15 +389,26 @@ def run_analysis(load_file=None):
                 final_stats[k]["mean_acc"].append(acc_mean)
                 final_stats[k]["sem_acc"].append(acc_sem)
 
-                data_to_save["raw_data_by_min_df"][mdf_str][k] = {
+                data_to_save[raw_key][param_str][k] = {
                     "space": space,
                     "accuracy_mean": acc_mean,
                     "accuracy_sem": acc_sem,
                 }
+                if mode == "bucket":
+                    data_to_save[raw_key][param_str][k]["space_by_seed"] = results[
+                        f"space_{k}_by_seed"
+                    ][i]
+                    data_to_save[raw_key][param_str][k][
+                        "accuracy_scores_by_seed"
+                    ] = results["accuracy_scores_by_seed"][i]
+                else:
+                    data_to_save[raw_key][param_str][k]["accuracy_scores"] = results[
+                        "accuracy_scores"
+                    ][i]
 
-        with open("imdb_size_vs_accuracy.json", "w") as f:
+        with open(output_json, "w") as f:
             json.dump(data_to_save, f, indent=2)
-        print("Saved raw data to imdb_size_vs_accuracy.json")
+        print(f"Saved raw data to {output_json}")
 
     # Plot
     plt.figure(figsize=figsize)
@@ -298,48 +427,90 @@ def run_analysis(load_file=None):
             labels[k],
             linewidth_marker[k],
             markersize[k],
+            show_all_markers=(mode == "bucket"),
         )
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
-    plt.text(
-        0.70,
-        4e6,
-        "Classical sparse / QRAM",
-        color=colors["sparse"],
-        fontsize=10,
-        path_effects=halo,
-    )
-    plt.text(
-        0.88,
-        9e4,
-        "Classical streaming",
-        color=colors["streaming"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
-    plt.text(
-        0.90,
-        1.9e1,
-        "Quantum oracle sketching",
-        color=colors["quantum"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
+    ax = plt.gca()
+    if mode == "bucket":
+        plt.text(
+            0.2,
+            0.85,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        plt.text(
+            0.9,
+            0.7,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+            ha="right",
+        )
+        plt.text(
+            0.15,
+            0.04,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        plt.xticks([0.60, 0.70, 0.80, 0.90], ["60%", "70%", "80%", "90%"])
+        plt.xlim(0.57, 0.92)
+    else:
+        plt.text(
+            0.70,
+            4e6,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+        )
+        plt.text(
+            0.88,
+            9e4,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        plt.text(
+            0.90,
+            1.9e1,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        plt.xticks(
+            [0.70, 0.75, 0.80, 0.85, 0.90],
+            ["70%", "75%", "80%", "85%", "90%"],
+        )
+        plt.xlim(0.69, 0.91)
 
     plt.yscale("log")
     plt.xlabel("Accuracy")
-    plt.xticks([0.70, 0.75, 0.80, 0.85, 0.90], ["70%", "75%", "80%", "85%", "90%"])
-    plt.xlim(0.69, 0.91)
     plt.tick_params(direction="in", which="both", top=False, right=True)
     plt.ylabel("Machine size")
     plt.ylim(1e1, 1e7)
     plt.grid(True, which="major", ls="-", alpha=0.1)
     plt.title("Binary classification")
     plt.tight_layout()
-    plt.savefig("imdb_size_vs_accuracy.pdf")
-    print("Saved imdb_size_vs_accuracy.pdf")
+    output_pdf = (
+        "imdb_bucket_size_vs_accuracy.pdf"
+        if mode == "bucket"
+        else "imdb_size_vs_accuracy.pdf"
+    )
+    plt.savefig(output_pdf)
+    print(f"Saved {output_pdf}")
 
 
 if __name__ == "__main__":
@@ -349,6 +520,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--load", type=str, default=None, help="Load analysis data from JSON file"
     )
+    parser.add_argument(
+        "--mode",
+        choices=["rare", "bucket"],
+        required=True,
+        help="rare: original rare-feature truncation; bucket: random feature buckets",
+    )
+    parser.add_argument("--n-bucket-seeds", type=int, default=n_bucket_seeds)
     args = parser.parse_args()
 
-    run_analysis(load_file=args.load)
+    run_analysis(
+        load_file=args.load, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+    )

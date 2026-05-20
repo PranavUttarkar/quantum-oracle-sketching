@@ -3,6 +3,7 @@ import json
 import random
 from collections import defaultdict
 
+import bucket_utils
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +13,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
 
 np.random.seed(42)
+random.seed(42)
 
 plt.rcParams.update(
     {
@@ -39,6 +41,20 @@ plt.rcParams.update(
 )
 
 min_dfs = list(range(2, 21)) + list(range(25, 105, 5))
+bucket_n_features = [
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    12288,
+    16384,
+    32768,
+]
+n_bucket_seeds = 5
 num_markers = 20
 
 # --- Plotting ---
@@ -188,8 +204,82 @@ def get_pca_results(categories):
     return results
 
 
+def get_pca_results_bucket(categories, bucket_seeds):
+    raw_documents = load_data(categories)
+
+    full_vectorizer = TfidfVectorizer(stop_words="english", min_df=1)
+    X_full = full_vectorizer.fit_transform(raw_documents)
+    X_full.eliminate_zeros()  # type: ignore
+
+    _, _, vt_full = svds(X_full.asfptype(), k=1)
+    v_full = vt_full[0]  # type: ignore
+    var_max = np.linalg.norm(X_full @ v_full) ** 2
+
+    results = {
+        "n_features": [],
+        "space_streaming": [],
+        "space_sparse": [],
+        "space_quantum": [],
+        "variance_recovery": [],
+    }
+
+    tqdm.write(f"Sweeping bucket dimension for categories {categories}...")
+
+    for n_features in tqdm(bucket_n_features, desc="bucket Sweep", leave=False):
+        seed_space_streaming = []
+        seed_space_sparse = []
+        seed_space_quantum = []
+        seed_recoveries = []
+
+        for seed in bucket_seeds:
+            X_bucket, bucket_info = bucket_utils.bucket_features(
+                X_full, n_features, seed=seed
+            )
+
+            feature_dim = X_bucket.shape[1]
+            num_samples = X_bucket.shape[0]
+            sparsity = bucket_utils.max_sparsity(X_bucket)
+
+            # Same machine-size formulas as the rare-feature path; bucket only changes X.
+            seed_space_streaming.append(feature_dim)
+            seed_space_sparse.append(X_bucket.getnnz())
+            seed_space_quantum.append(
+                2 * np.ceil(np.log2(num_samples + feature_dim))
+                + np.ceil(np.log2(sparsity))
+                + 4
+            )
+
+            if bucket_info is None:
+                seed_recoveries.append(1.0)
+            else:
+                _, _, vt_bucket = svds(X_bucket.asfptype(), k=1)
+                v_bucket = vt_bucket[0]  # type: ignore
+                v_lifted = bucket_utils.lift_bucket_vector(v_bucket, bucket_info)
+                v_lifted = v_lifted / np.linalg.norm(v_lifted)
+                var_captured = np.linalg.norm(X_full @ v_lifted) ** 2
+                seed_recoveries.append(var_captured / var_max)
+
+        results["n_features"].append(n_features)
+        results["space_streaming"].append(seed_space_streaming)
+        results["space_sparse"].append(seed_space_sparse)
+        results["space_quantum"].append(seed_space_quantum)
+        results["variance_recovery"].append(seed_recoveries)
+
+    return results
+
+
 def plot_parametric_hybrid(
-    x_mean, x_std, y_mean, y_std, color, marker, label, linewidth, marker_size, ax=None
+    x_mean,
+    x_std,
+    y_mean,
+    y_std,
+    color,
+    marker,
+    label,
+    linewidth,
+    marker_size,
+    ax=None,
+    show_all_markers=False,
 ):
     # 1. Horizontal Tube (Metric Variance)
     plt.fill_betweenx(
@@ -202,13 +292,16 @@ def plot_parametric_hybrid(
     # 3. Markers
     # only display markers for evenly spaced points over accuracy to avoid clutter
     # calculate marker indices based on x_mean, note that x_mean is not necessarily evenly spaced
-    x_min, x_max = np.min(x_mean), np.max(x_mean)
-    target_x = np.linspace(x_min, x_max, num=num_markers)
-    marker_indices = []
-    for tx in target_x:
-        idx = (np.abs(x_mean - tx)).argmin()
-        if idx not in marker_indices:
-            marker_indices.append(idx)
+    if show_all_markers:
+        marker_indices = np.arange(len(x_mean))
+    else:
+        x_min, x_max = np.min(x_mean), np.max(x_mean)
+        target_x = np.linspace(x_min, x_max, num=num_markers)
+        marker_indices = []
+        for tx in target_x:
+            idx = (np.abs(x_mean - tx)).argmin()
+            if idx not in marker_indices:
+                marker_indices.append(idx)
 
     plt.scatter(
         x_mean[marker_indices],
@@ -233,7 +326,12 @@ def get_sorted_arrays(x_mean, x_std, y_mean, y_std):
     )
 
 
-def run_analysis(n_pairs=10, from_json_data=None):
+def run_analysis(
+    n_pairs=10, from_json_data=None, mode=None, n_bucket_seeds=n_bucket_seeds
+):
+    if mode not in ("rare", "bucket"):
+        raise ValueError("mode must be 'rare' or 'bucket'")
+
     keys = ["streaming", "sparse", "quantum"]
     final_stats = {
         k: {
@@ -248,42 +346,59 @@ def run_analysis(n_pairs=10, from_json_data=None):
     if from_json_data is not None:
         print("Restoring analysis from JSON data...")
         n_pairs = from_json_data["n_pairs"]
-        raw_data = from_json_data["raw_data_by_min_df"]
-        by_min_df = {int(k): v for k, v in raw_data.items()}
-
-        # Target Range for Subsampling (matches fresh run range)
-        target_min_dfs = min_dfs
+        raw_key = "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_df"
+        raw_data = from_json_data[raw_key]
+        by_param = {int(k): v for k, v in raw_data.items()}
 
         # Re-compute stats
-        for mdf in sorted(list(set(target_min_dfs))):
-            if mdf not in by_min_df:
-                continue
-
+        for param in sorted(by_param.keys()):
             for k in keys:
-                spaces = np.array(by_min_df[mdf][k]["space"])
+                entry = by_param[param][k]
+                if "space_by_seed_pair" in entry:
+                    spaces = np.array(entry["space_by_seed_pair"], dtype=float).reshape(
+                        -1
+                    )
+                elif "space_by_pair" in entry:
+                    spaces = np.array(entry["space_by_pair"], dtype=float).reshape(-1)
+                else:
+                    spaces = np.array(entry["space"], dtype=float).reshape(-1)
 
                 # Handle variance/recovery key
-                if "variance_recovery" in by_min_df[mdf][k]:
-                    vars_ = np.array(by_min_df[mdf][k]["variance_recovery"])
-                elif "variance" in by_min_df[mdf][k]:
-                    vars_ = np.array(by_min_df[mdf][k]["variance"])
+                if "variance_recovery_by_seed_pair" in entry:
+                    vars_ = np.array(
+                        entry["variance_recovery_by_seed_pair"], dtype=float
+                    ).reshape(-1)
+                elif "variance_recovery_by_pair" in entry:
+                    vars_ = np.array(
+                        entry["variance_recovery_by_pair"], dtype=float
+                    ).reshape(-1)
+                elif "variance_recovery" in entry:
+                    vars_ = np.array(entry["variance_recovery"], dtype=float).reshape(
+                        -1
+                    )
+                elif "variance" in entry:
+                    vars_ = np.array(entry["variance"], dtype=float).reshape(-1)
                 else:
                     vars_ = np.zeros_like(spaces)
 
                 if len(spaces) > 0:
-                    sqrt_n = np.sqrt(len(spaces))
+                    sqrt_space_n = np.sqrt(spaces.size)
+                    sqrt_var_n = np.sqrt(vars_.size)
                     final_stats[k]["mean_space"].append(np.mean(spaces))
-                    final_stats[k]["std_space"].append(np.std(spaces) / sqrt_n)
+                    final_stats[k]["std_space"].append(np.std(spaces) / sqrt_space_n)
                     final_stats[k]["mean_var"].append(np.mean(vars_))
-                    final_stats[k]["std_var"].append(np.std(vars_) / sqrt_n)
+                    final_stats[k]["std_var"].append(np.std(vars_) / sqrt_var_n)
 
     else:
         print(f"Running Analysis over {n_pairs} random sets of 1v1 categories...")
+        if mode == "bucket":
+            bucket_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
+            print(f"Averaging over bucket seeds: {bucket_seeds}")
         all_cats = fetch_20newsgroups(
             subset="train", remove=("headers", "footers", "quotes")
         ).target_names  # type: ignore
 
-        by_min_df = defaultdict(
+        by_param = defaultdict(
             lambda: {k: {"space": [], "variance_recovery": []} for k in keys}
         )
 
@@ -296,47 +411,86 @@ def run_analysis(n_pairs=10, from_json_data=None):
 
             tqdm.write(f"[{i + 1}/{n_pairs}] Group: {cats}")
 
-            # Calculate PCA variance and space
-            res = get_pca_results(cats)
+            # Calculate PCA variance and space.
+            if mode == "bucket":
+                res = get_pca_results_bucket(cats, bucket_seeds=bucket_seeds)
+                params = res["n_features"]
+            else:
+                res = get_pca_results(cats)
+                params = res["min_dfs"]
 
-            for j, mdf in enumerate(res["min_dfs"]):
+            for j, param in enumerate(params):
                 for k in keys:
-                    by_min_df[mdf][k]["space"].append(res[f"space_{k}"][j])
-                    by_min_df[mdf][k]["variance_recovery"].append(
+                    by_param[param][k]["space"].append(res[f"space_{k}"][j])
+                    by_param[param][k]["variance_recovery"].append(
                         res["variance_recovery"][j]
                     )
 
         # Compute Stats
-        for mdf in sorted(by_min_df.keys()):
+        for param in sorted(by_param.keys()):
             for k in keys:
-                spaces = np.array(by_min_df[mdf][k]["space"])
-                vars_ = np.array(by_min_df[mdf][k]["variance_recovery"])
+                spaces = np.array(by_param[param][k]["space"], dtype=float).reshape(-1)
+                vars_ = np.array(
+                    by_param[param][k]["variance_recovery"], dtype=float
+                ).reshape(-1)
 
                 if len(spaces) > 0:
-                    sqrt_n = np.sqrt(len(spaces))
+                    sqrt_space_n = np.sqrt(spaces.size)
+                    sqrt_var_n = np.sqrt(vars_.size)
                     final_stats[k]["mean_space"].append(np.mean(spaces))
-                    final_stats[k]["std_space"].append(np.std(spaces) / sqrt_n)
+                    final_stats[k]["std_space"].append(np.std(spaces) / sqrt_space_n)
                     final_stats[k]["mean_var"].append(np.mean(vars_))
-                    final_stats[k]["std_var"].append(np.std(vars_) / sqrt_n)
+                    final_stats[k]["std_var"].append(np.std(vars_) / sqrt_var_n)
 
         # Save Data
-        data_to_save = {
-            "n_pairs": n_pairs,
-            "cats_per_class": 1,
-            "raw_data_by_min_df": {
-                mdf: {
-                    metric: {
-                        field: list(np.array(vals).astype(float))
-                        for field, vals in sub_dict.items()
+        raw_key = "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_df"
+        output_json = (
+            "20newsgroups_bucket_size_vs_variance.json"
+            if mode == "bucket"
+            else "20newsgroups_size_vs_variance.json"
+        )
+        data_to_save = {"n_pairs": n_pairs, "cats_per_class": 1, raw_key: {}}
+        for param, param_dict in by_param.items():
+            data_to_save[raw_key][param] = {}
+            for metric, sub_dict in param_dict.items():
+                spaces = np.array(sub_dict["space"], dtype=float)
+                recoveries = np.array(sub_dict["variance_recovery"], dtype=float)
+
+                if mode == "bucket":
+                    data_to_save[raw_key][param][metric] = {
+                        "space": float(np.mean(spaces)),
+                        "space_by_seed_pair": np.moveaxis(spaces, 0, 1).tolist(),
+                        "variance_recovery": float(np.mean(recoveries)),
+                        "variance_recovery_sem": float(
+                            np.std(recoveries.reshape(-1)) / np.sqrt(recoveries.size)
+                        ),
+                        "variance_recovery_by_seed_pair": np.moveaxis(
+                            recoveries, 0, 1
+                        ).tolist(),
                     }
-                    for metric, sub_dict in mdf_dict.items()
-                }
-                for mdf, mdf_dict in by_min_df.items()
-            },
-        }
-        with open("20newsgroups_size_vs_variance.json", "w") as f:
+                else:
+                    data_to_save[raw_key][param][metric] = {
+                        "space": float(np.mean(spaces)),
+                        "space_by_pair": spaces.tolist(),
+                        "variance_recovery": float(np.mean(recoveries)),
+                        "variance_recovery_sem": float(
+                            np.std(recoveries.reshape(-1)) / np.sqrt(recoveries.size)
+                        ),
+                        "variance_recovery_by_pair": recoveries.tolist(),
+                    }
+        if mode == "bucket":
+            data_to_save["bucket_seeds"] = bucket_seeds
+            data_to_save["bucket_n_features"] = bucket_n_features
+            data_to_save["bucket_seed_sample_seed"] = (
+                bucket_utils.DEFAULT_BUCKET_SEED_SAMPLE_SEED
+            )
+            data_to_save["bucket_key_note"] = (
+                "raw_data_by_n_features keys are requested bucket dimensions; "
+                "a pair with fewer original features uses its full matrix."
+            )
+        with open(output_json, "w") as f:
             json.dump(data_to_save, f, indent=2)
-        print("Saved raw data to 20newsgroups_size_vs_variance.json")
+        print(f"Saved raw data to {output_json}")
 
     # Plot: Size vs Variance Recovery
     plt.figure(figsize=figsize)
@@ -357,53 +511,93 @@ def run_analysis(n_pairs=10, from_json_data=None):
             labels[k],
             linewidth_marker[k],
             markersize[k],
+            show_all_markers=(mode == "bucket"),
         )
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
-    plt.text(
-        0.56,
-        8e4,
-        "Classical sparse / QRAM",
-        color=colors["sparse"],
-        fontsize=10,
-        path_effects=halo,
-    )
-    plt.text(
-        0.98,
-        1e4,
-        "Classical streaming",
-        color=colors["streaming"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
-    plt.text(
-        1,
-        7e1,
-        "Quantum oracle sketching",
-        color=colors["quantum"],
-        fontsize=10,
-        path_effects=halo,
-        ha="right",
-    )
+    ax = plt.gca()
+    if mode == "bucket":
+        plt.text(
+            0.2,
+            0.85,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+        plt.text(
+            0.95,
+            0.58,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+            ha="right",
+        )
+        plt.text(
+            0.15,
+            0.06,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            transform=ax.transAxes,
+        )
+    else:
+        plt.text(
+            0.56,
+            8e4,
+            "Classical sparse / QRAM",
+            color=colors["sparse"],
+            fontsize=10,
+            path_effects=halo,
+        )
+        plt.text(
+            0.98,
+            1e4,
+            "Classical streaming",
+            color=colors["streaming"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
+        plt.text(
+            1,
+            7e1,
+            "Quantum oracle sketching",
+            color=colors["quantum"],
+            fontsize=10,
+            path_effects=halo,
+            ha="right",
+        )
 
     plt.yscale("log")
     plt.ylim(1e1, 2e5)
     plt.xlabel("Relative explained variance")
-    plt.xticks(
-        [0.6, 0.7, 0.8, 0.9, 1.0],
-        ["60%", "70%", "80%", "90%", "100%"],
-    )
-    plt.xlim(0.52, 1.03)
+    if mode == "bucket":
+        plt.xticks([0.25, 0.5, 0.75, 1.0], ["25%", "50%", "75%", "100%"])
+        plt.xlim(0.08, 1.03)
+    else:
+        plt.xticks(
+            [0.6, 0.7, 0.8, 0.9, 1.0],
+            ["60%", "70%", "80%", "90%", "100%"],
+        )
+        plt.xlim(0.52, 1.03)
     plt.tick_params(direction="in", which="both", top=False, right=True)
-    ax = plt.gca()
     ax.set_ylabel("Machine size")
     ax.tick_params(axis="y")
     plt.grid(True, which="major", ls="-", alpha=0.1)
     plt.title("Dimension reduction")
     plt.tight_layout()
-    plt.savefig("20newsgroups_size_vs_variance.pdf")
-    print("Saved 20newsgroups_size_vs_variance.pdf")
+    output_pdf = (
+        "20newsgroups_bucket_size_vs_variance.pdf"
+        if mode == "bucket"
+        else "20newsgroups_size_vs_variance.pdf"
+    )
+    plt.savefig(output_pdf)
+    print(f"Saved {output_pdf}")
 
 
 if __name__ == "__main__":
@@ -419,13 +613,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--load", type=str, default=None, help="Load analysis data from JSON file"
     )
+    parser.add_argument(
+        "--mode",
+        choices=["rare", "bucket"],
+        required=True,
+        help="rare: original rare-feature truncation; bucket: random feature buckets",
+    )
+    parser.add_argument("--n-bucket-seeds", type=int, default=n_bucket_seeds)
     args = parser.parse_args()
 
     if args.load is not None:
         with open(args.load, "r") as f:
             data = json.load(f)
-        run_analysis(from_json_data=data)
+        run_analysis(
+            from_json_data=data, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+        )
     elif args.n_pairs is not None:
-        run_analysis(n_pairs=args.n_pairs)
+        run_analysis(
+            n_pairs=args.n_pairs, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+        )
     else:
         print("Please specify --n_pairs <N> (to run) or --load <file.json> (to plot).")
