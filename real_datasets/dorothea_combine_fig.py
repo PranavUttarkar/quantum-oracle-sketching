@@ -1,6 +1,7 @@
 import argparse
 import json
 
+import bucket_utils
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,15 +39,25 @@ colors = {
     "quantum": "#CD591A",
     "streaming": "#2657AF",
     "sparse": "#606060",
+    "jl_streaming": "#2A8C55",
 }
 labels = {
     "streaming": "Classical streaming",
     "sparse": "Classical sparse / QRAM",
     "quantum": "Quantum oracle sketching",
+    "jl_streaming": "Classical sparse JL",
 }
-markers = {"streaming": "P", "sparse": "X", "quantum": "D"}
-markersize = {"streaming": 50, "sparse": 50, "quantum": 30}
-linewidth_marker = {"streaming": 0, "sparse": 0, "quantum": 0}
+markers = {"streaming": "P", "sparse": "X", "quantum": "D", "jl_streaming": "o"}
+markersize = {"streaming": 50, "sparse": 50, "quantum": 30, "jl_streaming": 42}
+linewidth_marker = {"streaming": 0, "sparse": 0, "quantum": 0, "jl_streaming": 0}
+
+
+def streaming_label_for_mode(mode):
+    if mode == "bucket":
+        return "Classical feature hashing"
+    if mode == "jl":
+        return "Classical sparse JL"
+    return labels["streaming"]
 
 
 def plot_parametric_hybrid(
@@ -59,7 +70,6 @@ def plot_parametric_hybrid(
     label,
     linewidth,
     marker_size,
-    accuracy_panel=True,
     mode="rare",
 ):
     # 1. Horizontal Tube (Accuracy SEM/STD)
@@ -104,8 +114,9 @@ def mean_and_sem(values):
     return float(np.mean(vals)), float(np.std(vals) / np.sqrt(vals.size))
 
 
-def compute_stats_from_json(data, metric_type):
-    keys = ["streaming", "sparse", "quantum"]
+def compute_stats_from_json(data, metric_type, keys=None):
+    if keys is None:
+        keys = ["streaming", "sparse", "quantum"]
     final_stats = {
         k: {
             "mean_space": [],
@@ -163,7 +174,48 @@ def compute_stats_from_json(data, metric_type):
     return final_stats
 
 
-def plot_accuracy_panel(ax, stats, mode="rare"):
+def plot_jl_streaming(ax, stats):
+    xm, xs, ym = get_sorted_arrays(
+        stats["streaming"]["mean_x"],
+        stats["streaming"]["std_x"],
+        stats["streaming"]["mean_space"],
+    )
+    if xs is not None and np.any(xs > 0):
+        ax.fill_betweenx(
+            ym,
+            xm - xs,
+            xm + xs,
+            color=colors["jl_streaming"],
+            alpha=0.10,
+            edgecolor="none",
+            zorder=1,
+        )
+    ax.plot(
+        xm,
+        ym,
+        linestyle=(0, (1, 1.15)),
+        color=colors["jl_streaming"],
+        linewidth=1.8,
+        alpha=0.95,
+        dash_capstyle="round",
+        zorder=4,
+    )
+    marker_indices = np.arange(len(xm))
+    ax.scatter(
+        xm[marker_indices],
+        ym[marker_indices],
+        marker=markers["jl_streaming"],
+        facecolors="none",
+        edgecolors=colors["jl_streaming"],
+        label=labels["jl_streaming"],
+        alpha=0.98,
+        s=markersize["jl_streaming"],
+        linewidth=1.2,
+        zorder=5,
+    )
+
+
+def plot_accuracy_panel(ax, stats, mode="rare", jl_stats=None):
     keys = ["streaming", "sparse", "quantum"]
     for k in keys:
         xm, xs, ym = get_sorted_arrays(
@@ -179,16 +231,17 @@ def plot_accuracy_panel(ax, stats, mode="rare"):
             ym[ind],
             colors[k],
             markers[k],
-            labels[k],
+            (streaming_label_for_mode(mode) if k == "streaming" else labels[k]),
             linewidth_marker[k],
             markersize[k],
-            accuracy_panel=True,
             mode=mode,
         )
+    if jl_stats is not None:
+        plot_jl_streaming(ax, jl_stats)
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
 
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
         ax.text(
             0.05,
             0.92,
@@ -200,8 +253,8 @@ def plot_accuracy_panel(ax, stats, mode="rare"):
         )
         ax.text(
             0.85,
-            0.58,
-            "Classical streaming",
+            0.5,
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
@@ -217,6 +270,17 @@ def plot_accuracy_panel(ax, stats, mode="rare"):
             path_effects=halo,
             transform=ax.transAxes,
         )
+        if jl_stats is not None:
+            ax.text(
+                0.6,
+                0.35,
+                "Classical sparse JL",
+                color=colors["jl_streaming"],
+                fontsize=10,
+                path_effects=halo,
+                transform=ax.transAxes,
+                ha="right",
+            )
     else:
         ax.text(
             0.9,
@@ -230,7 +294,7 @@ def plot_accuracy_panel(ax, stats, mode="rare"):
         ax.text(
             0.9,
             4e3,
-            "Classical streaming",
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
@@ -249,7 +313,7 @@ def plot_accuracy_panel(ax, stats, mode="rare"):
     ax.set_yscale("log")
     ax.set_ylim(1e1, 2e6)
     ax.set_xlabel("Accuracy")
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
         ax.set_xlim(0.79, 0.95)
         ax.set_xticks([0.80, 0.84, 0.88, 0.92])
         ax.set_xticklabels(["80%", "84%", "88%", "92%"])
@@ -263,7 +327,7 @@ def plot_accuracy_panel(ax, stats, mode="rare"):
     ax.set_title("Binary classification")
 
 
-def plot_variance_panel(ax, stats, mode="rare"):
+def plot_variance_panel(ax, stats, mode="rare", jl_stats=None):
     keys = ["streaming", "sparse", "quantum"]
     for k in keys:
         xm, xs, ym = get_sorted_arrays(
@@ -271,7 +335,7 @@ def plot_variance_panel(ax, stats, mode="rare"):
             stats[k]["std_x"],
             stats[k]["mean_space"],
         )
-        if mode == "bucket":
+        if mode in ("bucket", "jl"):
             ind = (xm >= 0) * (xm <= 1)
         else:
             ind = (xm >= 0.04) * (xm <= 1)
@@ -282,16 +346,17 @@ def plot_variance_panel(ax, stats, mode="rare"):
             ym[ind],
             colors[k],
             markers[k],
-            labels[k],
+            (streaming_label_for_mode(mode) if k == "streaming" else labels[k]),
             linewidth_marker[k],
             markersize[k],
-            accuracy_panel=False,
             mode=mode,
         )
+    if jl_stats is not None:
+        plot_jl_streaming(ax, jl_stats)
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
 
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
         ax.text(
             0.2,
             0.85,
@@ -302,9 +367,9 @@ def plot_variance_panel(ax, stats, mode="rare"):
             transform=ax.transAxes,
         )
         ax.text(
-            0.35,
-            0.58,
-            "Classical streaming",
+            0.22,
+            0.5,
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
@@ -320,6 +385,17 @@ def plot_variance_panel(ax, stats, mode="rare"):
             path_effects=halo,
             transform=ax.transAxes,
         )
+        if jl_stats is not None:
+            ax.text(
+                0.7,
+                0.76,
+                "Classical sparse JL",
+                color=colors["jl_streaming"],
+                fontsize=10,
+                path_effects=halo,
+                transform=ax.transAxes,
+                ha="right",
+            )
     else:
         ax.text(
             0.15,
@@ -332,7 +408,7 @@ def plot_variance_panel(ax, stats, mode="rare"):
         ax.text(
             0.9,
             4e4,
-            "Classical streaming",
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
@@ -351,7 +427,7 @@ def plot_variance_panel(ax, stats, mode="rare"):
     ax.set_yscale("log")
     ax.set_ylim(1e1, 2e6)
     ax.set_xlabel("Relative explained variance")
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
         ax.set_xlim(0.35, 1.05)
         ax.set_xticks([0.4, 0.6, 0.8, 1.0])
         ax.set_xticklabels(["40%", "60%", "80%", "100%"])
@@ -369,15 +445,31 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--accuracy-json", default=None)
     parser.add_argument("--variance-json", default=None)
+    parser.add_argument("--jl-accuracy-json", default=None)
+    parser.add_argument("--jl-variance-json", default=None)
     parser.add_argument("--out", default=None)
-    parser.add_argument("--mode", choices=["rare", "bucket"], required=True)
+    parser.add_argument(
+        "--mode",
+        choices=["rare", "bucket", "jl", "bucket_jl"],
+        required=True,
+    )
     args = parser.parse_args()
 
-    if args.mode == "bucket":
+    if args.mode in ("bucket", "bucket_jl"):
         if args.accuracy_json is None:
             args.accuracy_json = "dorothea_bucket_size_vs_accuracy.json"
         if args.variance_json is None:
             args.variance_json = "dorothea_bucket_size_vs_variance.json"
+        if args.mode == "bucket_jl":
+            if args.jl_accuracy_json is None:
+                args.jl_accuracy_json = "dorothea_jl_size_vs_accuracy.json"
+            if args.jl_variance_json is None:
+                args.jl_variance_json = "dorothea_jl_size_vs_variance.json"
+    elif args.mode == "jl":
+        if args.accuracy_json is None:
+            args.accuracy_json = "dorothea_jl_size_vs_accuracy.json"
+        if args.variance_json is None:
+            args.variance_json = "dorothea_jl_size_vs_variance.json"
     else:
         if args.accuracy_json is None:
             args.accuracy_json = "dorothea_size_vs_accuracy.json"
@@ -388,29 +480,78 @@ def main():
         accuracy_data = json.load(f)
     with open(args.variance_json, "r") as f:
         variance_data = json.load(f)
+    if args.mode != "bucket_jl":
+        bucket_utils.validate_truncation_data(
+            accuracy_data, args.mode, args.accuracy_json
+        )
+        bucket_utils.validate_truncation_data(
+            variance_data, args.mode, args.variance_json
+        )
+    jl_accuracy_data = None
+    jl_variance_data = None
+    if args.mode == "bucket_jl":
+        with open(args.jl_accuracy_json, "r") as f:
+            jl_accuracy_data = json.load(f)
+        with open(args.jl_variance_json, "r") as f:
+            jl_variance_data = json.load(f)
 
     for path, data in [
         (args.accuracy_json, accuracy_data),
         (args.variance_json, variance_data),
     ]:
-        is_bucket = "raw_data_by_n_features" in data
-        if is_bucket != (args.mode == "bucket"):
+        is_feature_mode = "raw_data_by_n_features" in data
+        if is_feature_mode != (args.mode in ("bucket", "jl", "bucket_jl")):
             raise ValueError(f"{path} does not match --mode {args.mode}")
+        if args.mode == "bucket_jl" and data.get("truncation_mode") not in (
+            None,
+            "bucket",
+        ):
+            raise ValueError(f"{path} is not bucket data")
+    if args.mode == "bucket_jl":
+        for path, data in [
+            (args.jl_accuracy_json, jl_accuracy_data),
+            (args.jl_variance_json, jl_variance_data),
+        ]:
+            if "raw_data_by_n_features" not in data:
+                raise ValueError(f"{path} does not contain JL feature-sweep data")
+            if data.get("truncation_mode") not in (None, "jl"):
+                raise ValueError(f"{path} is not JL data")
+            if data.get("jl_transform") != bucket_utils.SPARSE_JL_TRANSFORM:
+                raise ValueError(
+                    f"{path} was not generated with balanced signed sparse JL"
+                )
 
     if args.out is None:
-        args.out = (
-            "dorothea_bucket_combine.pdf"
-            if args.mode == "bucket"
-            else "dorothea_combine.pdf"
-        )
+        if args.mode == "bucket":
+            args.out = "dorothea_bucket_combine.pdf"
+        elif args.mode == "bucket_jl":
+            args.out = "dorothea_bucket_jl_combine.pdf"
+        elif args.mode == "jl":
+            args.out = "dorothea_jl_combine.pdf"
+        else:
+            args.out = "dorothea_combine.pdf"
 
+    plot_mode = "bucket" if args.mode == "bucket_jl" else args.mode
     accuracy_stats = compute_stats_from_json(accuracy_data, "accuracy")
     variance_stats = compute_stats_from_json(variance_data, "variance")
+    jl_accuracy_stats = None
+    jl_variance_stats = None
+    if args.mode == "bucket_jl":
+        jl_accuracy_stats = compute_stats_from_json(
+            jl_accuracy_data, "accuracy", keys=["streaming"]
+        )
+        jl_variance_stats = compute_stats_from_json(
+            jl_variance_data, "variance", keys=["streaming"]
+        )
 
     fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(6, 3.5), sharey=True)
 
-    plot_accuracy_panel(ax_left, accuracy_stats, mode=args.mode)
-    plot_variance_panel(ax_right, variance_stats, mode=args.mode)
+    plot_accuracy_panel(
+        ax_left, accuracy_stats, mode=plot_mode, jl_stats=jl_accuracy_stats
+    )
+    plot_variance_panel(
+        ax_right, variance_stats, mode=plot_mode, jl_stats=jl_variance_stats
+    )
 
     ax_left.set_ylabel("Machine size")
     ax_right.tick_params(axis="y", labelleft=False)

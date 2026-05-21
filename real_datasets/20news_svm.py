@@ -43,7 +43,9 @@ plt.rcParams.update(
 
 min_dfs = list(range(2, 21)) + list(range(25, 105, 5))
 bucket_n_features = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+jl_n_features = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 n_bucket_seeds = 5
+n_jl_seeds = 5
 num_markers = 20
 
 # --- Plotting ---
@@ -61,6 +63,14 @@ markers = {"streaming": "P", "sparse": "X", "quantum": "D"}
 figsize = (3.5, 3.5)
 markersize = {"streaming": 50, "sparse": 50, "quantum": 30}
 linewidth_marker = {"streaming": 0, "sparse": 0, "quantum": 0}
+
+
+def streaming_label_for_mode(mode):
+    if mode == "bucket":
+        return "Classical feature hashing"
+    if mode == "jl":
+        return "Classical sparse JL"
+    return labels["streaming"]
 
 
 def load_data(categories=None):
@@ -163,7 +173,7 @@ def get_ridge_results(categories):
     return results
 
 
-def get_ridge_results_bucket(categories, bucket_seeds):
+def get_ridge_results_bucket(categories, bucket_seeds, truncation_mode="bucket"):
     X_train_raw, y_train, X_test_raw, y_test = load_data(categories)
 
     X_all_raw = list(X_train_raw) + list(X_test_raw)
@@ -182,9 +192,11 @@ def get_ridge_results_bucket(categories, bucket_seeds):
         "error_rates": [],
     }
 
-    tqdm.write(f"Sweeping bucket dimension for categories {categories}...")
+    tqdm.write(f"Sweeping {truncation_mode} dimension for categories {categories}...")
 
-    for n_features in tqdm(bucket_n_features, desc="bucket Sweep", leave=False):
+    feature_grid = jl_n_features if truncation_mode == "jl" else bucket_n_features
+
+    for n_features in tqdm(feature_grid, desc=f"{truncation_mode} Sweep", leave=False):
         seed_space_streaming = []
         seed_space_sparse = []
         seed_space_quantum = []
@@ -192,15 +204,17 @@ def get_ridge_results_bucket(categories, bucket_seeds):
         seed_error_scores = []
 
         for seed in bucket_seeds:
-            X_bucket, _ = bucket_utils.bucket_features(X_full, n_features, seed=seed)
+            X_bucket, _ = bucket_utils.random_truncated_features(
+                X_full, n_features, seed=seed, mode=truncation_mode
+            )
 
             feature_dim = X_bucket.shape[1]
             num_samples = X_bucket.shape[0]
             sparsity = bucket_utils.max_sparsity(X_bucket)
 
-            # Same machine-size formulas as the rare-feature path; bucket only changes X.
+            # Same machine-size formulas as the rare-feature path, applied to X_bucket.
             seed_space_streaming.append(feature_dim)
-            seed_space_sparse.append(X_bucket.getnnz())
+            seed_space_sparse.append(bucket_utils.matrix_nnz(X_bucket))
             seed_space_quantum.append(
                 2 * np.ceil(np.log2(num_samples + 2 * feature_dim))
                 + np.ceil(np.log2(sparsity + 1))
@@ -237,7 +251,12 @@ def plot_parametric_hybrid(
 ):
     # 1. Horizontal Tube (Accuracy/Error Variance)
     plt.fill_betweenx(
-        y_mean, x_mean - x_std, x_mean + x_std, color=color, alpha=0.2, edgecolor="none"
+        y_mean,
+        x_mean - x_std,
+        x_mean + x_std,
+        color=color,
+        alpha=0.2,
+        edgecolor="none",
     )
 
     # 2. Line (Full data)
@@ -284,8 +303,8 @@ def get_sorted_arrays(x_mean, x_std, y_mean, y_std):
 def run_analysis(
     n_pairs=10, from_json_data=None, mode=None, n_bucket_seeds=n_bucket_seeds
 ):
-    if mode not in ("rare", "bucket"):
-        raise ValueError("mode must be 'rare' or 'bucket'")
+    if mode not in ("rare", "bucket", "jl"):
+        raise ValueError("mode must be 'rare', 'bucket', or 'jl'")
 
     keys = ["streaming", "sparse", "quantum"]
     final_stats = {
@@ -303,7 +322,11 @@ def run_analysis(
     if from_json_data is not None:
         print("Restoring analysis from JSON data...")
         n_pairs = from_json_data["n_pairs"]
-        raw_key = "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_df"
+        raw_key = (
+            "raw_data_by_n_features"
+            if mode in ("bucket", "jl")
+            else "raw_data_by_min_df"
+        )
         raw_data = from_json_data[raw_key]
         by_param = {int(k): v for k, v in raw_data.items()}
 
@@ -311,6 +334,7 @@ def run_analysis(
         for param in sorted(by_param.keys()):
             for k in keys:
                 entry = by_param[param][k]
+
                 if "space_by_seed_pair" in entry:
                     spaces = np.array(entry["space_by_seed_pair"], dtype=float).reshape(
                         -1
@@ -356,9 +380,12 @@ def run_analysis(
 
     else:
         print(f"Running Analysis over {n_pairs} random sets of 1v1 categories...")
-        if mode == "bucket":
-            bucket_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
-            print(f"Averaging over bucket seeds: {bucket_seeds}")
+        if mode in ("bucket", "jl"):
+            if mode == "bucket":
+                feature_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
+            else:
+                feature_seeds = bucket_utils.sample_jl_seeds(n_bucket_seeds)
+            print(f"Averaging over random feature seeds: {feature_seeds}")
         all_cats = fetch_20newsgroups(
             subset="train", remove=("headers", "footers", "quotes")
         ).target_names  # type: ignore
@@ -374,8 +401,10 @@ def run_analysis(
             tqdm.write(f"[{i + 1}/{n_pairs}] Group: {cats}")
 
             # Calculate Ridge accuracy and space.
-            if mode == "bucket":
-                res = get_ridge_results_bucket(cats, bucket_seeds=bucket_seeds)
+            if mode in ("bucket", "jl"):
+                res = get_ridge_results_bucket(
+                    cats, bucket_seeds=feature_seeds, truncation_mode=mode
+                )
                 params = res["n_features"]
             else:
                 res = get_ridge_results(cats)
@@ -407,12 +436,17 @@ def run_analysis(
                     final_stats[k]["std_err"].append(np.std(errs) / sqrt_err_n)
 
         # Save Data
-        raw_key = "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_df"
-        output_json = (
-            "20newsgroups_bucket_size_vs_accuracy.json"
-            if mode == "bucket"
-            else "20newsgroups_size_vs_accuracy.json"
+        raw_key = (
+            "raw_data_by_n_features"
+            if mode in ("bucket", "jl")
+            else "raw_data_by_min_df"
         )
+        if mode == "bucket":
+            output_json = "20newsgroups_bucket_size_vs_accuracy.json"
+        elif mode == "jl":
+            output_json = "20newsgroups_jl_size_vs_accuracy.json"
+        else:
+            output_json = "20newsgroups_size_vs_accuracy.json"
         data_to_save = {"n_pairs": n_pairs, "cats_per_class": 1, raw_key: {}}
         for param, param_dict in by_param.items():
             data_to_save[raw_key][param] = {}
@@ -421,7 +455,7 @@ def run_analysis(
                 accuracies = np.array(sub_dict["accuracy"], dtype=float)
                 errors = np.array(sub_dict["error"], dtype=float)
 
-                if mode == "bucket":
+                if mode in ("bucket", "jl"):
                     data_to_save[raw_key][param][metric] = {
                         "space": float(np.mean(spaces)),
                         "space_by_seed_pair": np.moveaxis(spaces, 0, 1).tolist(),
@@ -454,13 +488,26 @@ def run_analysis(
                         "error_scores_by_pair": errors.tolist(),
                     }
         if mode == "bucket":
-            data_to_save["bucket_seeds"] = bucket_seeds
+            data_to_save["truncation_mode"] = "bucket"
+            data_to_save["bucket_seeds"] = feature_seeds
             data_to_save["bucket_n_features"] = bucket_n_features
             data_to_save["bucket_seed_sample_seed"] = (
                 bucket_utils.DEFAULT_BUCKET_SEED_SAMPLE_SEED
             )
             data_to_save["bucket_key_note"] = (
                 "raw_data_by_n_features keys are requested bucket dimensions; "
+                "a pair with fewer original features uses its full matrix."
+            )
+        elif mode == "jl":
+            data_to_save["truncation_mode"] = "jl"
+            data_to_save["jl_seeds"] = feature_seeds
+            data_to_save["jl_n_features"] = jl_n_features
+            data_to_save["jl_seed_sample_seed"] = (
+                bucket_utils.DEFAULT_JL_SEED_SAMPLE_SEED
+            )
+            data_to_save["jl_transform"] = bucket_utils.SPARSE_JL_TRANSFORM
+            data_to_save["jl_key_note"] = (
+                "raw_data_by_n_features keys are requested JL dimensions; "
                 "a pair with fewer original features uses its full matrix."
             )
         with open(output_json, "w") as f:
@@ -483,15 +530,18 @@ def run_analysis(
             ys,
             colors[k],
             markers[k],
-            labels[k],
+            (streaming_label_for_mode(mode) if k == "streaming" else labels[k]),
             linewidth_marker[k],
             markersize[k],
-            show_all_markers=(mode == "bucket"),
+            show_all_markers=(mode in ("bucket", "jl")),
         )
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
     ax = plt.gca()
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
+        streaming_label_x, streaming_label_y, streaming_label_ha = (
+            (0.58, 0.46, "right") if mode == "jl" else (0.78, 0.58, "right")
+        )
         plt.text(
             0.2,
             0.82,
@@ -502,14 +552,14 @@ def run_analysis(
             transform=ax.transAxes,
         )
         plt.text(
-            0.78,
-            0.58,
-            "Classical streaming",
+            streaming_label_x,
+            streaming_label_y,
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
             transform=ax.transAxes,
-            ha="right",
+            ha=streaming_label_ha,
         )
         plt.text(
             0.15,
@@ -522,20 +572,21 @@ def run_analysis(
         )
     else:
         plt.text(
-            0.835,
-            8e4,
+            0.83,
+            9e4,
             "Classical sparse / QRAM",
             color=colors["sparse"],
             fontsize=10,
             path_effects=halo,
         )
         plt.text(
-            0.873,
+            0.934,
             9e3,
-            "Classical streaming",
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
+            ha="right",
         )
         plt.text(
             0.94,
@@ -549,7 +600,7 @@ def run_analysis(
 
     plt.yscale("log")
     plt.xlabel("Accuracy")
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
         plt.xticks([0.65, 0.75, 0.85, 0.95], ["65%", "75%", "85%", "95%"])
         plt.xlim(0.62, 0.97)
     else:
@@ -564,11 +615,12 @@ def run_analysis(
     plt.grid(True, which="major", ls="-", alpha=0.1)
     plt.title("Binary classification")
     plt.tight_layout()
-    output_pdf = (
-        "20newsgroups_bucket_size_vs_accuracy.pdf"
-        if mode == "bucket"
-        else "20newsgroups_size_vs_accuracy.pdf"
-    )
+    if mode == "bucket":
+        output_pdf = "20newsgroups_bucket_size_vs_accuracy.pdf"
+    elif mode == "jl":
+        output_pdf = "20newsgroups_jl_size_vs_accuracy.pdf"
+    else:
+        output_pdf = "20newsgroups_size_vs_accuracy.pdf"
     plt.savefig(output_pdf)
     print(f"Saved {output_pdf}")
 
@@ -588,22 +640,32 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mode",
-        choices=["rare", "bucket"],
+        choices=["rare", "bucket", "jl"],
         required=True,
-        help="rare: original rare-feature truncation; bucket: random feature buckets",
+        help=(
+            "rare: original rare-feature truncation; "
+            "bucket: random feature buckets; "
+            "jl: balanced signed sparse JL projection"
+        ),
     )
     parser.add_argument("--n-bucket-seeds", type=int, default=n_bucket_seeds)
+    parser.add_argument("--n-jl-seeds", type=int, default=n_jl_seeds)
     args = parser.parse_args()
+    if args.mode == "jl":
+        n_random_seeds = args.n_jl_seeds
+    else:
+        n_random_seeds = args.n_bucket_seeds
 
     if args.load is not None:
         with open(args.load, "r") as f:
             data = json.load(f)
+        bucket_utils.validate_truncation_data(data, args.mode, args.load)
         run_analysis(
-            from_json_data=data, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+            from_json_data=data, mode=args.mode, n_bucket_seeds=n_random_seeds
         )
     elif args.n_pairs is not None:
         run_analysis(
-            n_pairs=args.n_pairs, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+            n_pairs=args.n_pairs, mode=args.mode, n_bucket_seeds=n_random_seeds
         )
     else:
         print("Please specify --n_pairs <N> (to run) or --load <file.json> (to plot).")

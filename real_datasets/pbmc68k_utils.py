@@ -49,9 +49,11 @@ def load_pbmc68k_data(min_samples=1, normalize=True, binary=True):
     # Normalize if requested
     if normalize:
         if sp.issparse(X):
-            X = X.toarray()
-        X = np.log1p(X)
-        X = sp.csr_matrix(X)
+            X = X.astype(np.float32).copy()
+            X.data = np.log1p(X.data)
+        else:
+            X = np.log1p(X)
+            X = sp.csr_matrix(X)
 
     # Filter genes by min_samples (number of cells with non-zero expression)
     if min_samples > 1:

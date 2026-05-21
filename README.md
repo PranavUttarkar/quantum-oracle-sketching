@@ -99,12 +99,19 @@ This generates:
 
 ## Real-Dataset Experiments
 
-`real_datasets/` evaluates machine-size vs performance under feature truncation (via `min_df` or `min_samples`), for:
+`real_datasets/` evaluates machine-size vs performance under feature truncation and randomized feature sketches, for:
 - IMDb sentiment (text TF-IDF)
 - 20 Newsgroups topic data (text TF-IDF)
 - PBMC68k single-cell RNA (UMI)
 - Dorothea drug-discovery dataset
 - Splice dataset (k-mer)
+
+The mode-enabled real-dataset scripts use:
+- `--mode rare`: rare-feature truncation (via `min_df` or `min_samples`).
+- `--mode bucket`: balanced feature hashing / feature buckets.
+- `--mode jl`: balanced signed sparse JL projection, implemented as the bucket transform with an additional random sign per original feature.
+
+For `bucket` and `jl`, the requested sketch dimension is capped at the original feature dimension; this full-dimension endpoint returns the original data exactly. Bucket/JL random seeds are sampled reproducibly from a fixed sample seed in `bucket_utils.py` (default sample seed `42`), with 5 seeds by default (`--n-bucket-seeds` or `--n-jl-seeds`).
 
 ### Run full pipelines from scratch
 
@@ -112,30 +119,30 @@ Run from `real_datasets/` so relative paths and defaults match script expectatio
 
 IMDb:
 ```bash
-python imdb_svm.py
-python imdb_pca.py
-python imdb_combine_fig.py
+python imdb_svm.py --mode rare
+python imdb_pca.py --mode rare
+python imdb_combine_fig.py --mode rare
 ```
 
 20 Newsgroups (default averages over 100 random category pairs):
 ```bash
-python 20news_svm.py --n_pairs 100
-python 20news_pca.py --n_pairs 100
-python 20news_combine_fig.py
+python 20news_svm.py --mode rare --n_pairs 100
+python 20news_pca.py --mode rare --n_pairs 100
+python 20news_combine_fig.py --mode rare
 ```
 
 PBMC68k:
 ```bash
-python pbmc68k_svm.py
-python pbmc68k_pca.py
-python pbmc68k_combine_fig.py
+python pbmc68k_svm.py --mode rare
+python pbmc68k_pca.py --mode rare
+python pbmc68k_combine_fig.py --mode rare
 ```
 
 Dorothea:
 ```bash
-python dorothea_svm.py
-python dorothea_pca.py
-python dorothea_combine_fig.py
+python dorothea_svm.py --mode rare
+python dorothea_pca.py --mode rare
+python dorothea_combine_fig.py --mode rare
 ```
 
 Splice:
@@ -143,6 +150,23 @@ Splice:
 python splice_svm.py
 python splice_pca.py
 python splice_combine_fig.py
+```
+
+### Bucket feature hashing and sparse JL numerics
+
+Run from `real_datasets/`. A minimal single-dataset IMDb run for both SVM and PCA is:
+
+```bash
+python imdb_svm.py --mode bucket
+python imdb_pca.py --mode bucket
+python imdb_svm.py --mode jl
+python imdb_pca.py --mode jl
+```
+
+After generating both bucket and JL JSON files for the same dataset, the combine scripts support `--mode bucket_jl`. This plots the bucket sparse / streaming / QOS curves and the sparse JL streaming curve in the same two-panel figure:
+
+```bash
+python imdb_combine_fig.py --mode bucket_jl
 ```
 
 ### Dataset source/setup notes

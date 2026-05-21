@@ -97,7 +97,9 @@ min_dfs = [
     5000,
 ]
 bucket_n_features = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+jl_n_features = bucket_n_features
 n_bucket_seeds = 5
+n_jl_seeds = 5
 num_markers = 40
 
 colors = {
@@ -114,6 +116,14 @@ markers = {"streaming": "P", "sparse": "X", "quantum": "D"}
 figsize = (3.5, 3.5)
 markersize = {"streaming": 50, "sparse": 50, "quantum": 30}
 linewidth_marker = {"streaming": 0, "sparse": 0, "quantum": 0}
+
+
+def streaming_label_for_mode(mode):
+    if mode == "bucket":
+        return "Classical feature hashing"
+    if mode == "jl":
+        return "Classical sparse JL"
+    return labels["streaming"]
 
 
 def get_ridge_results_full():
@@ -134,7 +144,9 @@ def get_ridge_results_full():
     tqdm.write("Sweeping min_df for Full IMDB...")
 
     for mdf in tqdm(min_dfs, desc="min_df Sweep"):
-        vectorizer = TfidfVectorizer(min_df=mdf, stop_words="english")
+        vectorizer = TfidfVectorizer(
+            min_df=mdf, stop_words="english", dtype=np.float32
+        )
         X_all = vectorizer.fit_transform(X_all_raw)
         X_all.eliminate_zeros()
 
@@ -177,16 +189,17 @@ def get_ridge_results_full():
     return results
 
 
-def get_ridge_results_bucket(bucket_seeds):
+def get_ridge_results_bucket(bucket_seeds, truncation_mode="bucket"):
     # 1. Load and vectorize the full min_df=1 data once.
     X_all_raw, y_all = imdb_utils.load_imdb_data()
 
-    vectorizer = TfidfVectorizer(min_df=1, stop_words="english")
+    vectorizer = TfidfVectorizer(min_df=1, stop_words="english", dtype=np.float32)
     X_full = vectorizer.fit_transform(X_all_raw)
     X_full.eliminate_zeros()
 
     full_dim = X_full.shape[1]
-    n_features_list = [k for k in bucket_n_features if k < full_dim] + [full_dim]
+    feature_grid = jl_n_features if truncation_mode == "jl" else bucket_n_features
+    n_features_list = [k for k in feature_grid if k < full_dim] + [full_dim]
 
     results = {
         "n_features": [],
@@ -201,24 +214,26 @@ def get_ridge_results_bucket(bucket_seeds):
         "accuracy_scores_by_seed": [],
     }
 
-    tqdm.write("Sweeping bucket dimension for Full IMDB...")
+    tqdm.write(f"Sweeping {truncation_mode} dimension for Full IMDB...")
 
-    for n_features in tqdm(n_features_list, desc="bucket Sweep"):
+    for n_features in tqdm(n_features_list, desc=f"{truncation_mode} Sweep"):
         seed_space_streaming = []
         seed_space_sparse = []
         seed_space_quantum = []
         seed_accuracy_scores = []
 
         for seed in bucket_seeds:
-            X_bucket, _ = bucket_utils.bucket_features(X_full, n_features, seed=seed)
+            X_bucket, _ = bucket_utils.random_truncated_features(
+                X_full, n_features, seed=seed, mode=truncation_mode
+            )
 
             feature_dim = X_bucket.shape[1]
             num_samples = X_bucket.shape[0]
             sparsity = bucket_utils.max_sparsity(X_bucket)
 
-            # Same machine-size formulas as the rare-feature path; bucket only changes X.
+            # Same machine-size formulas as the rare-feature path, applied to X_bucket.
             seed_space_streaming.append(feature_dim)
-            seed_space_sparse.append(X_bucket.getnnz())
+            seed_space_sparse.append(bucket_utils.matrix_nnz(X_bucket))
             seed_space_quantum.append(
                 2 * np.ceil(np.log2(num_samples + 2 * feature_dim))
                 + np.ceil(np.log2(sparsity + 1))
@@ -313,8 +328,8 @@ def get_sorted_arrays(x_mean, x_std, y_mean):
 
 
 def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
-    if mode not in ("rare", "bucket"):
-        raise ValueError("mode must be 'rare' or 'bucket'")
+    if mode not in ("rare", "bucket", "jl"):
+        raise ValueError("mode must be 'rare', 'bucket', or 'jl'")
 
     keys = ["streaming", "sparse", "quantum"]
 
@@ -322,7 +337,12 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
         print(f"Loading analysis from {load_file}...")
         with open(load_file, "r") as f:
             data = json.load(f)
-        raw_key = "raw_data_by_n_features" if mode == "bucket" else "raw_data_by_min_df"
+        bucket_utils.validate_truncation_data(data, mode, load_file)
+        raw_key = (
+            "raw_data_by_n_features"
+            if mode in ("bucket", "jl")
+            else "raw_data_by_min_df"
+        )
         raw_data = data[raw_key]
         params = sorted([int(k) for k in raw_data.keys()])
 
@@ -332,6 +352,7 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
         for param in params:
             for k in keys:
                 entry = raw_data[str(param)][k]
+
                 final_stats[k]["mean_space"].append(entry["space"])
                 if "accuracy_scores_by_seed" in entry:
                     acc_mean, acc_sem = bucket_utils.mean_and_sem(
@@ -348,15 +369,23 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
                 final_stats[k]["sem_acc"].append(acc_sem)
 
     else:
-        if mode == "bucket":
-            print("Running Ridge Analysis on bucketed IMDB Dataset...")
-            bucket_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
-            print(f"Averaging over bucket seeds: {bucket_seeds}")
-            results = get_ridge_results_bucket(bucket_seeds=bucket_seeds)
+        if mode in ("bucket", "jl"):
+            if mode == "bucket":
+                print("Running Ridge Analysis on bucketed IMDB Dataset...")
+                feature_seeds = bucket_utils.sample_bucket_seeds(n_bucket_seeds)
+                output_json = "imdb_bucket_size_vs_accuracy.json"
+                dataset_name = "IMDB Full (bucket)"
+            else:
+                print("Running Ridge Analysis on Sparse-JL-projected IMDB Dataset...")
+                feature_seeds = bucket_utils.sample_jl_seeds(n_bucket_seeds)
+                output_json = "imdb_jl_size_vs_accuracy.json"
+                dataset_name = "IMDB Full (sparse JL)"
+            print(f"Averaging over random feature seeds: {feature_seeds}")
+            results = get_ridge_results_bucket(
+                bucket_seeds=feature_seeds, truncation_mode=mode
+            )
             param_name = "n_features"
             raw_key = "raw_data_by_n_features"
-            output_json = "imdb_bucket_size_vs_accuracy.json"
-            dataset_name = "IMDB Full (bucket)"
         else:
             print("Running Ridge Analysis on Full IMDB Dataset...")
             results = get_ridge_results_full()
@@ -371,11 +400,20 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
 
         data_to_save = {"dataset": dataset_name, raw_key: {}}
         if mode == "bucket":
-            data_to_save["bucket_seeds"] = bucket_seeds
-            data_to_save["bucket_n_features"] = bucket_n_features
+            data_to_save["truncation_mode"] = "bucket"
+            data_to_save["bucket_seeds"] = feature_seeds
+            data_to_save["bucket_n_features"] = results["n_features"]
             data_to_save["bucket_seed_sample_seed"] = (
                 bucket_utils.DEFAULT_BUCKET_SEED_SAMPLE_SEED
             )
+        elif mode == "jl":
+            data_to_save["truncation_mode"] = "jl"
+            data_to_save["jl_seeds"] = feature_seeds
+            data_to_save["jl_n_features"] = results["n_features"]
+            data_to_save["jl_seed_sample_seed"] = (
+                bucket_utils.DEFAULT_JL_SEED_SAMPLE_SEED
+            )
+            data_to_save["jl_transform"] = bucket_utils.SPARSE_JL_TRANSFORM
 
         for i, param in enumerate(results[param_name]):
             param_str = str(param)
@@ -394,7 +432,7 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
                     "accuracy_mean": acc_mean,
                     "accuracy_sem": acc_sem,
                 }
-                if mode == "bucket":
+                if mode in ("bucket", "jl"):
                     data_to_save[raw_key][param_str][k]["space_by_seed"] = results[
                         f"space_{k}_by_seed"
                     ][i]
@@ -424,15 +462,18 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
             ym,
             colors[k],
             markers[k],
-            labels[k],
+            (streaming_label_for_mode(mode) if k == "streaming" else labels[k]),
             linewidth_marker[k],
             markersize[k],
-            show_all_markers=(mode == "bucket"),
+            show_all_markers=(mode in ("bucket", "jl")),
         )
 
     halo = [pe.withStroke(linewidth=3, foreground="white")]
     ax = plt.gca()
-    if mode == "bucket":
+    if mode in ("bucket", "jl"):
+        streaming_label_x, streaming_label_y, streaming_label_ha = (
+            (0.7, 0.5, "right") if mode == "jl" else (0.9, 0.7, "right")
+        )
         plt.text(
             0.2,
             0.85,
@@ -443,14 +484,14 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
             transform=ax.transAxes,
         )
         plt.text(
-            0.9,
-            0.7,
-            "Classical streaming",
+            streaming_label_x,
+            streaming_label_y,
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
             transform=ax.transAxes,
-            ha="right",
+            ha=streaming_label_ha,
         )
         plt.text(
             0.15,
@@ -475,7 +516,7 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
         plt.text(
             0.88,
             9e4,
-            "Classical streaming",
+            streaming_label_for_mode(mode),
             color=colors["streaming"],
             fontsize=10,
             path_effects=halo,
@@ -504,11 +545,12 @@ def run_analysis(load_file=None, mode=None, n_bucket_seeds=n_bucket_seeds):
     plt.grid(True, which="major", ls="-", alpha=0.1)
     plt.title("Binary classification")
     plt.tight_layout()
-    output_pdf = (
-        "imdb_bucket_size_vs_accuracy.pdf"
-        if mode == "bucket"
-        else "imdb_size_vs_accuracy.pdf"
-    )
+    if mode == "bucket":
+        output_pdf = "imdb_bucket_size_vs_accuracy.pdf"
+    elif mode == "jl":
+        output_pdf = "imdb_jl_size_vs_accuracy.pdf"
+    else:
+        output_pdf = "imdb_size_vs_accuracy.pdf"
     plt.savefig(output_pdf)
     print(f"Saved {output_pdf}")
 
@@ -522,13 +564,21 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mode",
-        choices=["rare", "bucket"],
+        choices=["rare", "bucket", "jl"],
         required=True,
-        help="rare: original rare-feature truncation; bucket: random feature buckets",
+        help=(
+            "rare: original rare-feature truncation; "
+            "bucket: random feature buckets; "
+            "jl: balanced signed sparse JL projection"
+        ),
     )
     parser.add_argument("--n-bucket-seeds", type=int, default=n_bucket_seeds)
+    parser.add_argument("--n-jl-seeds", type=int, default=n_jl_seeds)
     args = parser.parse_args()
-
+    if args.mode == "jl":
+        n_random_seeds = args.n_jl_seeds
+    else:
+        n_random_seeds = args.n_bucket_seeds
     run_analysis(
-        load_file=args.load, mode=args.mode, n_bucket_seeds=args.n_bucket_seeds
+        load_file=args.load, mode=args.mode, n_bucket_seeds=n_random_seeds
     )
