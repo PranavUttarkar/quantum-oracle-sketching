@@ -1,0 +1,481 @@
+{
+  "dataset": "PBMC68k (Binary)",
+  "raw_data_by_min_samples": {
+    "1": {
+      "streaming": {
+        "space": 16122,
+        "variance_recovery": 0.9999998300031215,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7111339,
+        "variance_recovery": 0.9999998300031215,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999998300031215,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "2": {
+      "streaming": {
+        "space": 14136,
+        "variance_recovery": 0.999999822916723,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7109353,
+        "variance_recovery": 0.999999822916723,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.999999822916723,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "3": {
+      "streaming": {
+        "space": 13208,
+        "variance_recovery": 0.9999998099732555,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7107497,
+        "variance_recovery": 0.9999998099732555,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999998099732555,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "5": {
+      "streaming": {
+        "space": 12058,
+        "variance_recovery": 0.9999997623110689,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7103578,
+        "variance_recovery": 0.9999997623110689,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999997623110689,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "7": {
+      "streaming": {
+        "space": 11345,
+        "variance_recovery": 0.999999685003196,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7099676,
+        "variance_recovery": 0.999999685003196,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.999999685003196,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "10": {
+      "streaming": {
+        "space": 10619,
+        "variance_recovery": 0.9999995230099602,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7093956,
+        "variance_recovery": 0.9999995230099602,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999995230099602,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "15": {
+      "streaming": {
+        "space": 9779,
+        "variance_recovery": 0.9999990938765521,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7084014,
+        "variance_recovery": 0.9999990938765521,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999990938765521,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "21": {
+      "streaming": {
+        "space": 9099,
+        "variance_recovery": 0.999998353624124,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7072216,
+        "variance_recovery": 0.999998353624124,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.999998353624124,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "30": {
+      "streaming": {
+        "space": 8264,
+        "variance_recovery": 0.9999964820272399,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7051535,
+        "variance_recovery": 0.9999964820272399,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999964820272399,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "42": {
+      "streaming": {
+        "space": 7437,
+        "variance_recovery": 0.9999927246510685,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 7022371,
+        "variance_recovery": 0.9999927246510685,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999927246510685,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "60": {
+      "streaming": {
+        "space": 6490,
+        "variance_recovery": 0.9999839999012049,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6974994,
+        "variance_recovery": 0.9999839999012049,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999839999012049,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "84": {
+      "streaming": {
+        "space": 5588,
+        "variance_recovery": 0.9999675333069407,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6911425,
+        "variance_recovery": 0.9999675333069407,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999675333069407,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "119": {
+      "streaming": {
+        "space": 4663,
+        "variance_recovery": 0.9999338219104978,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6819017,
+        "variance_recovery": 0.9999338219104978,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9999338219104978,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "167": {
+      "streaming": {
+        "space": 3830,
+        "variance_recovery": 0.9998730605284858,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6701754,
+        "variance_recovery": 0.9998730605284858,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9998730605284858,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "236": {
+      "streaming": {
+        "space": 3085,
+        "variance_recovery": 0.9997622849083163,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6552527,
+        "variance_recovery": 0.9997622849083163,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9997622849083163,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "332": {
+      "streaming": {
+        "space": 2492,
+        "variance_recovery": 0.9995887689449462,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6386394,
+        "variance_recovery": 0.9995887689449462,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9995887689449462,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "467": {
+      "streaming": {
+        "space": 1934,
+        "variance_recovery": 0.999268351709285,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 6167795,
+        "variance_recovery": 0.999268351709285,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.999268351709285,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "657": {
+      "streaming": {
+        "space": 1441,
+        "variance_recovery": 0.9987051608470322,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 5894853,
+        "variance_recovery": 0.9987051608470322,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9987051608470322,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "925": {
+      "streaming": {
+        "space": 1059,
+        "variance_recovery": 0.9978348344133595,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 5596732,
+        "variance_recovery": 0.9978348344133595,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9978348344133595,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "1301": {
+      "streaming": {
+        "space": 765,
+        "variance_recovery": 0.9965199593569188,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 5276327,
+        "variance_recovery": 0.9965199593569188,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9965199593569188,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "1831": {
+      "streaming": {
+        "space": 532,
+        "variance_recovery": 0.9944421586182063,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 4918489,
+        "variance_recovery": 0.9944421586182063,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9944421586182063,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "2577": {
+      "streaming": {
+        "space": 370,
+        "variance_recovery": 0.9915154186358685,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 4568864,
+        "variance_recovery": 0.9915154186358685,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9915154186358685,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "3626": {
+      "streaming": {
+        "space": 267,
+        "variance_recovery": 0.9875623477487545,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 4247697,
+        "variance_recovery": 0.9875623477487545,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9875623477487545,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "5102": {
+      "streaming": {
+        "space": 196,
+        "variance_recovery": 0.9821765376424472,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 3936644,
+        "variance_recovery": 0.9821765376424472,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9821765376424472,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "7179": {
+      "streaming": {
+        "space": 157,
+        "variance_recovery": 0.9766559397254153,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 3705418,
+        "variance_recovery": 0.9766559397254153,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9766559397254153,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "10101": {
+      "streaming": {
+        "space": 122,
+        "variance_recovery": 0.9666089684837204,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 3416674,
+        "variance_recovery": 0.9666089684837204,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9666089684837204,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "14214": {
+      "streaming": {
+        "space": 97,
+        "variance_recovery": 0.9500266464747111,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 3122020,
+        "variance_recovery": 0.9500266464747111,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9500266464747111,
+        "variance_recovery_sem": 0.0
+      }
+    },
+    "20000": {
+      "streaming": {
+        "space": 74,
+        "variance_recovery": 0.9202933634350532,
+        "variance_recovery_sem": 0.0
+      },
+      "sparse": {
+        "space": 2740930,
+        "variance_recovery": 0.9202933634350532,
+        "variance_recovery_sem": 0.0
+      },
+      "quantum": {
+        "space": 54.0,
+        "variance_recovery": 0.9202933634350532,
+        "variance_recovery_sem": 0.0
+      }
+    }
+  }
+}
